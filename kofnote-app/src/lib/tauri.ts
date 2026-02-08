@@ -32,6 +32,8 @@ type MockState = {
   logs: LogEntry[]
   settings: AppSettings
   hasOpenaiKey: boolean
+  hasGeminiKey: boolean
+  hasClaudeKey: boolean
   hasNotionKey: boolean
   notebooks: NotebookSummary[]
 }
@@ -155,6 +157,8 @@ function createMockState(): MockState {
     records,
     logs,
     hasOpenaiKey: false,
+    hasGeminiKey: false,
+    hasClaudeKey: false,
     hasNotionKey: false,
     notebooks: [
       {
@@ -276,6 +280,8 @@ function createHealth(): HealthDiagnostics {
     latestRecordAt: fingerprint.latestRecordAt,
     latestLogAt: fingerprint.latestLogAt,
     hasOpenaiApiKey: mockState.hasOpenaiKey,
+    hasGeminiApiKey: mockState.hasGeminiKey,
+    hasClaudeApiKey: mockState.hasClaudeKey,
     profileCount: mockState.settings.profiles.length,
   }
 }
@@ -452,6 +458,28 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
     }
     case 'clear_openai_api_key': {
       mockState.hasOpenaiKey = false
+      return true as T
+    }
+    case 'set_gemini_api_key': {
+      mockState.hasGeminiKey = true
+      return true as T
+    }
+    case 'has_gemini_api_key': {
+      return mockState.hasGeminiKey as T
+    }
+    case 'clear_gemini_api_key': {
+      mockState.hasGeminiKey = false
+      return true as T
+    }
+    case 'set_claude_api_key': {
+      mockState.hasClaudeKey = true
+      return true as T
+    }
+    case 'has_claude_api_key': {
+      return mockState.hasClaudeKey as T
+    }
+    case 'clear_claude_api_key': {
+      mockState.hasClaudeKey = false
       return true as T
     }
     case 'set_notion_api_key': {
@@ -661,6 +689,30 @@ export async function hasOpenaiApiKey(): Promise<boolean> {
 
 export async function clearOpenaiApiKey(): Promise<boolean> {
   return invokeCommand<boolean>('clear_openai_api_key')
+}
+
+export async function setGeminiApiKey(apiKey: string): Promise<boolean> {
+  return invokeCommand<boolean>('set_gemini_api_key', { apiKey })
+}
+
+export async function hasGeminiApiKey(): Promise<boolean> {
+  return invokeCommand<boolean>('has_gemini_api_key')
+}
+
+export async function clearGeminiApiKey(): Promise<boolean> {
+  return invokeCommand<boolean>('clear_gemini_api_key')
+}
+
+export async function setClaudeApiKey(apiKey: string): Promise<boolean> {
+  return invokeCommand<boolean>('set_claude_api_key', { apiKey })
+}
+
+export async function hasClaudeApiKey(): Promise<boolean> {
+  return invokeCommand<boolean>('has_claude_api_key')
+}
+
+export async function clearClaudeApiKey(): Promise<boolean> {
+  return invokeCommand<boolean>('clear_claude_api_key')
 }
 
 export async function setNotionApiKey(apiKey: string): Promise<boolean> {

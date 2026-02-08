@@ -10,6 +10,8 @@ import {
   type SimulationNodeDatum,
 } from 'd3-force'
 import {
+  clearClaudeApiKey,
+  clearGeminiApiKey,
   clearNotionApiKey,
   clearOpenaiApiKey,
   deleteRecord,
@@ -18,6 +20,8 @@ import {
   getDashboardStats,
   getHealthDiagnostics,
   getHomeFingerprint,
+  hasClaudeApiKey,
+  hasGeminiApiKey,
   hasNotionApiKey,
   hasOpenaiApiKey,
   listLogs,
@@ -33,6 +37,8 @@ import {
   resolveCentralHome,
   runAiAnalysis,
   saveAppSettings,
+  setClaudeApiKey,
+  setGeminiApiKey,
   setNotionApiKey,
   searchRecords,
   syncRecordBidirectional,
@@ -484,6 +490,10 @@ function App() {
 
   const [openaiKeyDraft, setOpenaiKeyDraft] = useState('')
   const [hasOpenaiKey, setHasOpenaiKey] = useState(false)
+  const [geminiKeyDraft, setGeminiKeyDraft] = useState('')
+  const [hasGeminiKey, setHasGeminiKey] = useState(false)
+  const [claudeKeyDraft, setClaudeKeyDraft] = useState('')
+  const [hasClaudeKey, setHasClaudeKey] = useState(false)
   const [notionKeyDraft, setNotionKeyDraft] = useState('')
   const [hasNotionKey, setHasNotionKey] = useState(false)
   const [notionConflictStrategy, setNotionConflictStrategy] = useState<NotionConflictStrategy>('manual')
@@ -968,13 +978,17 @@ function App() {
   }, [centralHome, centralHomeInput, loadCentralHome, pushNotice, t])
 
   const loadSettings = useCallback(async () => {
-    const [settings, hasKey, notionKey] = await Promise.all([
+    const [settings, hasOpenai, hasGemini, hasClaude, notionKey] = await Promise.all([
       getAppSettings(),
       hasOpenaiApiKey(),
+      hasGeminiApiKey(),
+      hasClaudeApiKey(),
       hasNotionApiKey(),
     ])
     setAppSettings(settings)
-    setHasOpenaiKey(hasKey)
+    setHasOpenaiKey(hasOpenai)
+    setHasGeminiKey(hasGemini)
+    setHasClaudeKey(hasClaude)
     setHasNotionKey(notionKey)
     setSelectedNotebookId(settings.integrations.notebooklm.defaultNotebookId ?? '')
 
@@ -1146,6 +1160,50 @@ function App() {
       await clearOpenaiApiKey()
       setHasOpenaiKey(false)
       pushNotice('success', t('OpenAI API key cleared.', 'OpenAI API 金鑰已清除。'))
+    })
+  }, [pushNotice, t, withBusy])
+
+  const handleSaveGeminiKey = useCallback(async () => {
+    if (!geminiKeyDraft.trim()) {
+      pushNotice('error', t('Gemini API key cannot be empty.', 'Gemini API 金鑰不可為空。'))
+      return
+    }
+
+    await withBusy(async () => {
+      await setGeminiApiKey(geminiKeyDraft.trim())
+      setGeminiKeyDraft('')
+      setHasGeminiKey(true)
+      pushNotice('success', t('Gemini API key saved to Keychain.', 'Gemini API 金鑰已儲存至 Keychain。'))
+    })
+  }, [geminiKeyDraft, pushNotice, t, withBusy])
+
+  const handleClearGeminiKey = useCallback(async () => {
+    await withBusy(async () => {
+      await clearGeminiApiKey()
+      setHasGeminiKey(false)
+      pushNotice('success', t('Gemini API key cleared.', 'Gemini API 金鑰已清除。'))
+    })
+  }, [pushNotice, t, withBusy])
+
+  const handleSaveClaudeKey = useCallback(async () => {
+    if (!claudeKeyDraft.trim()) {
+      pushNotice('error', t('Claude API key cannot be empty.', 'Claude API 金鑰不可為空。'))
+      return
+    }
+
+    await withBusy(async () => {
+      await setClaudeApiKey(claudeKeyDraft.trim())
+      setClaudeKeyDraft('')
+      setHasClaudeKey(true)
+      pushNotice('success', t('Claude API key saved to Keychain.', 'Claude API 金鑰已儲存至 Keychain。'))
+    })
+  }, [claudeKeyDraft, pushNotice, t, withBusy])
+
+  const handleClearClaudeKey = useCallback(async () => {
+    await withBusy(async () => {
+      await clearClaudeApiKey()
+      setHasClaudeKey(false)
+      pushNotice('success', t('Claude API key cleared.', 'Claude API 金鑰已清除。'))
     })
   }, [pushNotice, t, withBusy])
 
@@ -3006,29 +3064,87 @@ function App() {
 
           <hr className="separator" />
 
-          <h3>{t('OpenAI Keychain', 'OpenAI 金鑰管理')}</h3>
-          <div className="form-grid two-col-grid">
-            <label>
-              {t('API Key (saved to Keychain)', 'API 金鑰（儲存在 Keychain）')}
-              <input
-                type="password"
-                value={openaiKeyDraft}
-                onChange={(event) => setOpenaiKeyDraft(event.target.value)}
-                placeholder={hasOpenaiKey ? t('Key already configured', '金鑰已設定') : 'sk-...'}
-              />
-            </label>
-            <label>
-              {t('Key Status', '金鑰狀態')}
-              <input value={hasOpenaiKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
-            </label>
+          <h3>{t('AI Provider Keychain', 'AI 供應商金鑰管理')}</h3>
+
+          <div className="panel panel-strong">
+            <h3>{t('OpenAI Keychain', 'OpenAI 金鑰管理')}</h3>
+            <div className="form-grid two-col-grid">
+              <label>
+                {t('API Key (saved to Keychain)', 'API 金鑰（儲存在 Keychain）')}
+                <input
+                  type="password"
+                  value={openaiKeyDraft}
+                  onChange={(event) => setOpenaiKeyDraft(event.target.value)}
+                  placeholder={hasOpenaiKey ? t('Key already configured', '金鑰已設定') : 'sk-...'}
+                />
+              </label>
+              <label>
+                {t('Key Status', '金鑰狀態')}
+                <input value={hasOpenaiKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
+              </label>
+            </div>
+            <div className="toolbar-row two-col">
+              <button type="button" onClick={() => void handleSaveApiKey()}>
+                {t('Save Key', '儲存金鑰')}
+              </button>
+              <button type="button" className="ghost-btn" onClick={() => void handleClearApiKey()}>
+                {t('Clear Key', '清除金鑰')}
+              </button>
+            </div>
           </div>
-          <div className="toolbar-row two-col">
-            <button type="button" onClick={() => void handleSaveApiKey()}>
-              {t('Save Key', '儲存金鑰')}
-            </button>
-            <button type="button" className="ghost-btn" onClick={() => void handleClearApiKey()}>
-              {t('Clear Key', '清除金鑰')}
-            </button>
+
+          <div className="panel panel-strong">
+            <h3>{t('Gemini Keychain', 'Gemini 金鑰管理')}</h3>
+            <div className="form-grid two-col-grid">
+              <label>
+                {t('API Key (saved to Keychain)', 'API 金鑰（儲存在 Keychain）')}
+                <input
+                  type="password"
+                  value={geminiKeyDraft}
+                  onChange={(event) => setGeminiKeyDraft(event.target.value)}
+                  placeholder={hasGeminiKey ? t('Key already configured', '金鑰已設定') : 'AIza...'}
+                />
+              </label>
+              <label>
+                {t('Key Status', '金鑰狀態')}
+                <input value={hasGeminiKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
+              </label>
+            </div>
+            <div className="toolbar-row two-col">
+              <button type="button" onClick={() => void handleSaveGeminiKey()}>
+                {t('Save Key', '儲存金鑰')}
+              </button>
+              <button type="button" className="ghost-btn" onClick={() => void handleClearGeminiKey()}>
+                {t('Clear Key', '清除金鑰')}
+              </button>
+            </div>
+          </div>
+
+          <div className="panel panel-strong">
+            <h3>{t('Claude Keychain', 'Claude 金鑰管理')}</h3>
+            <div className="form-grid two-col-grid">
+              <label>
+                {t('API Key (saved to Keychain)', 'API 金鑰（儲存在 Keychain）')}
+                <input
+                  type="password"
+                  value={claudeKeyDraft}
+                  onChange={(event) => setClaudeKeyDraft(event.target.value)}
+                  placeholder={hasClaudeKey ? t('Key already configured', '金鑰已設定') : 'sk-ant-...'}
+                />
+              </label>
+              <label>
+                {t('Key Status', '金鑰狀態')}
+                <input value={hasClaudeKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
+              </label>
+            </div>
+            <div className="toolbar-row two-col">
+              <button type="button" onClick={() => void handleSaveClaudeKey()}>
+                {t('Save Key', '儲存金鑰')}
+              </button>
+              <button type="button" className="ghost-btn" onClick={() => void handleClearClaudeKey()}>
+                {t('Clear Key', '清除金鑰')}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -3062,6 +3178,14 @@ function App() {
             <li>
               <span>{t('OpenAI key', 'OpenAI 金鑰')}</span>
               <strong>{health?.hasOpenaiApiKey ? t('configured', '已設定') : t('not set', '未設定')}</strong>
+            </li>
+            <li>
+              <span>{t('Gemini key', 'Gemini 金鑰')}</span>
+              <strong>{health?.hasGeminiApiKey ? t('configured', '已設定') : t('not set', '未設定')}</strong>
+            </li>
+            <li>
+              <span>{t('Claude key', 'Claude 金鑰')}</span>
+              <strong>{health?.hasClaudeApiKey ? t('configured', '已設定') : t('not set', '未設定')}</strong>
             </li>
             <li>
               <span>{t('Profiles', '設定檔')}</span>
@@ -3158,17 +3282,6 @@ function App() {
             </button>
           ))}
         </div>
-
-        <div className="sidebar-meta">
-          <p>
-            <strong>{t('Active Home', '目前路徑')}</strong>
-          </p>
-          <code>{centralHomeDisplay.fullPath || '-'}</code>
-        </div>
-
-        <button type="button" className="ghost-btn" onClick={() => setCommandOpen(true)}>
-          {t('Command Palette (⌘K)', '指令選單 (⌘K)')}
-        </button>
       </aside>
 
       <section className="workspace">

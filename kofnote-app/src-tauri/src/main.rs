@@ -27,6 +27,8 @@ const RECORD_TYPE_DIRS: [(&str, &str); 5] = [
 
 const OPENAI_SERVICE: &str = "com.keeponfirst.kofnote";
 const OPENAI_USERNAME: &str = "openai_api_key";
+const GEMINI_USERNAME: &str = "gemini_api_key";
+const CLAUDE_USERNAME: &str = "claude_api_key";
 const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const NOTION_USERNAME: &str = "notion_api_key";
 const NOTION_API_VERSION: &str = "2022-06-28";
@@ -272,6 +274,8 @@ struct HealthDiagnostics {
     latest_record_at: String,
     latest_log_at: String,
     has_openai_api_key: bool,
+    has_gemini_api_key: bool,
+    has_claude_api_key: bool,
     profile_count: usize,
 }
 
@@ -750,6 +754,8 @@ fn get_health_diagnostics(central_home: String) -> Result<HealthDiagnostics, Str
         latest_record_at: records.first().map(|item| item.created_at.clone()).unwrap_or_default(),
         latest_log_at: logs.first().map(|item| item.timestamp.clone()).unwrap_or_default(),
         has_openai_api_key: has_openai_api_key_internal().unwrap_or(false),
+        has_gemini_api_key: has_gemini_api_key_internal().unwrap_or(false),
+        has_claude_api_key: has_claude_api_key_internal().unwrap_or(false),
         profile_count: settings.profiles.len(),
     })
 }
@@ -787,6 +793,62 @@ fn has_openai_api_key() -> Result<bool, String> {
 #[tauri::command]
 fn clear_openai_api_key() -> Result<bool, String> {
     let entry = keyring_entry()?;
+    match entry.delete_password() {
+        Ok(_) => Ok(true),
+        Err(KeyringError::NoEntry) => Ok(true),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn set_gemini_api_key(api_key: String) -> Result<bool, String> {
+    if api_key.trim().is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+
+    let entry = gemini_keyring_entry()?;
+    entry
+        .set_password(api_key.trim())
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn has_gemini_api_key() -> Result<bool, String> {
+    has_gemini_api_key_internal()
+}
+
+#[tauri::command]
+fn clear_gemini_api_key() -> Result<bool, String> {
+    let entry = gemini_keyring_entry()?;
+    match entry.delete_password() {
+        Ok(_) => Ok(true),
+        Err(KeyringError::NoEntry) => Ok(true),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn set_claude_api_key(api_key: String) -> Result<bool, String> {
+    if api_key.trim().is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+
+    let entry = claude_keyring_entry()?;
+    entry
+        .set_password(api_key.trim())
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn has_claude_api_key() -> Result<bool, String> {
+    has_claude_api_key_internal()
+}
+
+#[tauri::command]
+fn clear_claude_api_key() -> Result<bool, String> {
+    let entry = claude_keyring_entry()?;
     match entry.delete_password() {
         Ok(_) => Ok(true),
         Err(KeyringError::NoEntry) => Ok(true),
@@ -2329,13 +2391,32 @@ fn keyring_entry() -> Result<Entry, String> {
     Entry::new(OPENAI_SERVICE, OPENAI_USERNAME).map_err(|error| error.to_string())
 }
 
-fn has_openai_api_key_internal() -> Result<bool, String> {
-    let entry = keyring_entry()?;
+fn has_keyring_entry_value(entry: Entry) -> Result<bool, String> {
     match entry.get_password() {
         Ok(value) => Ok(!value.trim().is_empty()),
         Err(KeyringError::NoEntry) => Ok(false),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn has_openai_api_key_internal() -> Result<bool, String> {
+    has_keyring_entry_value(keyring_entry()?)
+}
+
+fn gemini_keyring_entry() -> Result<Entry, String> {
+    Entry::new(OPENAI_SERVICE, GEMINI_USERNAME).map_err(|error| error.to_string())
+}
+
+fn has_gemini_api_key_internal() -> Result<bool, String> {
+    has_keyring_entry_value(gemini_keyring_entry()?)
+}
+
+fn claude_keyring_entry() -> Result<Entry, String> {
+    Entry::new(OPENAI_SERVICE, CLAUDE_USERNAME).map_err(|error| error.to_string())
+}
+
+fn has_claude_api_key_internal() -> Result<bool, String> {
+    has_keyring_entry_value(claude_keyring_entry()?)
 }
 
 fn notion_keyring_entry() -> Result<Entry, String> {
@@ -2343,12 +2424,7 @@ fn notion_keyring_entry() -> Result<Entry, String> {
 }
 
 fn has_notion_api_key_internal() -> Result<bool, String> {
-    let entry = notion_keyring_entry()?;
-    match entry.get_password() {
-        Ok(value) => Ok(!value.trim().is_empty()),
-        Err(KeyringError::NoEntry) => Ok(false),
-        Err(error) => Err(error.to_string()),
-    }
+    has_keyring_entry_value(notion_keyring_entry()?)
 }
 
 fn resolve_notion_api_key(api_key: Option<String>) -> Result<String, String> {
@@ -3963,6 +4039,12 @@ fn main() {
             set_openai_api_key,
             has_openai_api_key,
             clear_openai_api_key,
+            set_gemini_api_key,
+            has_gemini_api_key,
+            clear_gemini_api_key,
+            set_claude_api_key,
+            has_claude_api_key,
+            clear_claude_api_key,
             set_notion_api_key,
             has_notion_api_key,
             clear_notion_api_key,

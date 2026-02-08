@@ -138,6 +138,8 @@ export type HealthDiagnostics = {
   latestRecordAt: string
   latestLogAt: string
   hasOpenaiApiKey: boolean
+  hasGeminiApiKey: boolean
+  hasClaudeApiKey: boolean
   profileCount: number
 }
 
