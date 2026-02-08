@@ -8,9 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "tauri:build:ci": "CI=true tauri build --debug"
+    "tauri:dev": "PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" tauri dev",
+    "tauri:build": "PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" tauri build",
+    "tauri:build:ci": "CI=true PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" tauri build --debug"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

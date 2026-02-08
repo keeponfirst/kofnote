@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "kofnote: npm install (tauri app)",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}/kofnote-app\" && npm install",
+      "problemMatcher": []
+    },
+    {
+      "label": "kofnote: tauri dev",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}/kofnote-app\" && npm run tauri:dev",
+      "problemMatcher": []
+    },
+    {
+      "label": "kofnote: web build",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}/kofnote-app\" && npm run build",
+      "problemMatcher": []
+    },
+    {
+      "label": "kofnote: cargo check (tauri)",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}/kofnote-app/src-tauri\" && /bin/bash -lc 'PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo check'",
+      "problemMatcher": []
+    },
+    {
+      "label": "kofnote: python mvp run",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}\" && python3 main.py",
+      "problemMatcher": []
+    }
+  ]
+}

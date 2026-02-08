@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "KOF Note: Tauri Dev (npm)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "cd \"${workspaceFolder}/kofnote-app\" && npm run tauri:dev"
+    },
+    {
+      "name": "KOF Note: Python MVP",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "KOF Note: Attach Rust (LLDB)",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickMyProcess}",
+      "sourceLanguages": ["rust"]
+    }
+  ]
+}
