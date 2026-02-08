@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+playwright-report
+test-results
 src-tauri/target
 src-tauri/Cargo.lock
 src-tauri/gen

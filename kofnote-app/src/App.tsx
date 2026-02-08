@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type Simulation,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from 'd3-force'
+import {
   clearNotionApiKey,
   clearOpenaiApiKey,
   deleteRecord,
@@ -12,6 +22,7 @@ import {
   hasOpenaiApiKey,
   listLogs,
   listRecords,
+  pickCentralHomeDirectory,
   notebooklmAddRecordSource,
   notebooklmAsk,
   notebooklmCreateNotebook,
@@ -29,6 +40,7 @@ import {
   setOpenaiApiKey,
   upsertRecord,
 } from './lib/tauri'
+import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from './i18n'
 import type {
   AiProvider,
   AppSettings,
@@ -74,17 +86,56 @@ type RecordFormState = {
 }
 
 const LOCAL_STORAGE_KEY = 'kofnote.centralHome'
+const LOCAL_STORAGE_LANGUAGE_KEY = 'kofnote.uiLanguage'
 const DEFAULT_MODEL = 'gpt-4.1-mini'
 const RECORD_TYPES: RecordType[] = ['decision', 'worklog', 'idea', 'backlog', 'note']
-const TAB_ITEMS: Array<{ key: TabKey; label: string }> = [
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'records', label: 'Records' },
-  { key: 'logs', label: 'Logs' },
-  { key: 'ai', label: 'AI' },
-  { key: 'integrations', label: 'Integrations' },
-  { key: 'settings', label: 'Settings' },
-  { key: 'health', label: 'Health' },
-]
+const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'logs', 'ai', 'integrations', 'settings', 'health']
+const TYPE_COLORS: Record<RecordType, string> = {
+  decision: '#20d6ff',
+  worklog: '#6d78ff',
+  idea: '#ff4cab',
+  backlog: '#ffb35e',
+  note: '#43e29f',
+}
+
+type TemplateValues = Record<string, string | number>
+
+type LogPulse = {
+  date: string
+  count: number
+  failed: number
+}
+
+type AiInsights = {
+  summary: string[]
+  risks: string[]
+  actions: string[]
+}
+
+type DashboardGraphNodeKind = 'core' | 'type' | 'tag' | 'record'
+
+type DashboardGraphNode = SimulationNodeDatum & {
+  id: string
+  kind: DashboardGraphNodeKind
+  label: string
+  color: string
+  radius: number
+  count: number
+  recordType?: RecordType
+  tag?: string
+  jsonPath?: string
+}
+
+type DashboardGraphLink = SimulationLinkDatum<DashboardGraphNode> & {
+  id: string
+  source: string | DashboardGraphNode
+  target: string | DashboardGraphNode
+  relation: 'core-type' | 'type-record' | 'record-tag'
+  weight: number
+}
+
+const DASHBOARD_GRAPH_WIDTH = 980
+const DASHBOARD_GRAPH_HEIGHT = 480
 
 function nowIso() {
   return new Date().toISOString()
@@ -152,8 +203,235 @@ function makeProfile(name = 'New Profile'): WorkspaceProfile {
   }
 }
 
+function statusTone(status: string): 'ok' | 'warn' | 'error' {
+  const normalized = status.toLowerCase()
+  if (normalized.includes('fail') || normalized.includes('error')) {
+    return 'error'
+  }
+  if (normalized.includes('warn') || normalized.includes('pending')) {
+    return 'warn'
+  }
+  return 'ok'
+}
+
+function buildLogPulse(logs: LogEntry[], days = 10): LogPulse[] {
+  const buckets = new Map<string, LogPulse>()
+
+  for (const item of logs) {
+    if (!item.timestamp) {
+      continue
+    }
+    const date = item.timestamp.slice(0, 10)
+    const existing = buckets.get(date) ?? { date, count: 0, failed: 0 }
+    existing.count += 1
+    if (statusTone(item.status || '') === 'error') {
+      existing.failed += 1
+    }
+    buckets.set(date, existing)
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-days)
+}
+
+function cleanInsightLine(line: string): string {
+  return line.replace(/^[\s\-*•\d.)]+/, '').trim()
+}
+
+function extractAiInsights(content: string): AiInsights {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  const summary: string[] = []
+  const risks: string[] = []
+  const actions: string[] = []
+
+  for (const line of lines) {
+    const cleaned = cleanInsightLine(line)
+    if (!cleaned) {
+      continue
+    }
+    const lower = cleaned.toLowerCase()
+
+    if (risks.length < 4 && /(risk|blocker|issue|danger|風險|阻塞|問題|危險)/i.test(cleaned)) {
+      risks.push(cleaned)
+      continue
+    }
+
+    if (
+      actions.length < 5 &&
+      (/(action|next|todo|plan|execute|行動|下一步|待辦|執行)/i.test(cleaned) ||
+        /^(\d+\.|[-*•])/.test(line))
+    ) {
+      actions.push(cleaned)
+      continue
+    }
+
+    if (summary.length < 4 && !/(title|summary|摘要|結論)/i.test(lower)) {
+      summary.push(cleaned)
+    }
+  }
+
+  return {
+    summary,
+    risks,
+    actions,
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+function linkNodeId(endpoint: string | DashboardGraphNode): string {
+  return typeof endpoint === 'string' ? endpoint : endpoint.id
+}
+
+function shortenLabel(value: string, max = 26): string {
+  if (value.length <= max) {
+    return value
+  }
+  return `${value.slice(0, Math.max(8, max - 1)).trim()}…`
+}
+
+function createDashboardGraph(records: RecordItem[], stats: DashboardStats | null): {
+  nodes: DashboardGraphNode[]
+  links: DashboardGraphLink[]
+} {
+  const nodes: DashboardGraphNode[] = []
+  const links: DashboardGraphLink[] = []
+  const tagNodeMap = new Map<string, DashboardGraphNode>()
+
+  const coreNode: DashboardGraphNode = {
+    id: 'core:knowledge',
+    kind: 'core',
+    label: 'KOF CORE',
+    color: '#7f8dff',
+    radius: 26,
+    count: records.length,
+  }
+  nodes.push(coreNode)
+
+  for (const type of RECORD_TYPES) {
+    const count = stats?.typeCounts[type] ?? records.filter((record) => record.recordType === type).length
+    const typeNode: DashboardGraphNode = {
+      id: `type:${type}`,
+      kind: 'type',
+      label: type,
+      color: TYPE_COLORS[type],
+      radius: count === 0 ? 10 : clamp(12 + count, 12, 22),
+      count,
+      recordType: type,
+    }
+    nodes.push(typeNode)
+    links.push({
+      id: `core-${type}`,
+      source: coreNode.id,
+      target: typeNode.id,
+      relation: 'core-type',
+      weight: Math.max(1, count),
+    })
+  }
+
+  const sortedRecords = [...records].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  const recordNodes = sortedRecords.slice(0, 18).map((record) => {
+    const tagCount = record.tags.length
+    const node: DashboardGraphNode = {
+      id: `record:${record.jsonPath ?? `${record.createdAt}-${record.title}`}`,
+      kind: 'record',
+      label: shortenLabel(record.title || record.recordType, 24),
+      color: `${TYPE_COLORS[record.recordType]}cc`,
+      radius: clamp(9 + tagCount, 9, 15),
+      count: tagCount,
+      recordType: record.recordType,
+      jsonPath: record.jsonPath ?? undefined,
+    }
+    return { node, record }
+  })
+
+  for (const entry of recordNodes) {
+    nodes.push(entry.node)
+    links.push({
+      id: `${entry.node.id}->type:${entry.record.recordType}`,
+      source: `type:${entry.record.recordType}`,
+      target: entry.node.id,
+      relation: 'type-record',
+      weight: Math.max(1, entry.record.tags.length),
+    })
+  }
+
+  const tagCounts = new Map<string, number>()
+  for (const record of records) {
+    for (const tag of record.tags) {
+      const cleanTag = tag.trim()
+      if (!cleanTag) {
+        continue
+      }
+      tagCounts.set(cleanTag, (tagCounts.get(cleanTag) ?? 0) + 1)
+    }
+  }
+
+  const topTags = [...tagCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 18)
+
+  for (const [tag, count] of topTags) {
+    const tagNode: DashboardGraphNode = {
+      id: `tag:${tag}`,
+      kind: 'tag',
+      label: shortenLabel(tag, 16),
+      color: '#f266c4',
+      radius: clamp(8 + count * 0.9, 10, 17),
+      count,
+      tag,
+    }
+    tagNodeMap.set(tag, tagNode)
+    nodes.push(tagNode)
+    links.push({
+      id: `core-tag:${tag}`,
+      source: coreNode.id,
+      target: tagNode.id,
+      relation: 'core-type',
+      weight: Math.max(1, count),
+    })
+  }
+
+  for (const entry of recordNodes) {
+    const linkedTags = entry.record.tags
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 4)
+
+    for (const tag of linkedTags) {
+      const tagNode = tagNodeMap.get(tag)
+      if (!tagNode) {
+        continue
+      }
+      links.push({
+        id: `${entry.node.id}->${tagNode.id}`,
+        source: entry.node.id,
+        target: tagNode.id,
+        relation: 'record-tag',
+        weight: Math.max(1, tagNode.count),
+      })
+    }
+  }
+
+  return { nodes, links }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard')
+  const [language, setLanguage] = useState<UiLanguage>(() => {
+    if (typeof window === 'undefined') {
+      return 'en'
+    }
+    const saved = localStorage.getItem(LOCAL_STORAGE_LANGUAGE_KEY)
+    return isSupportedLanguage(saved) ? saved : 'en'
+  })
 
   const [centralHomeInput, setCentralHomeInput] = useState('')
   const [centralHome, setCentralHome] = useState('')
@@ -229,8 +507,47 @@ function App() {
   const [commandOpen, setCommandOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const [notices, setNotices] = useState<Notice[]>([])
+  const [dashboardGraphNodes, setDashboardGraphNodes] = useState<DashboardGraphNode[]>([])
+  const [dashboardGraphLinks, setDashboardGraphLinks] = useState<DashboardGraphLink[]>([])
+  const [dashboardFocusedNodeId, setDashboardFocusedNodeId] = useState<string | null>(null)
 
   const commandInputRef = useRef<HTMLInputElement | null>(null)
+  const dashboardGraphSvgRef = useRef<SVGSVGElement | null>(null)
+  const dashboardGraphSimulationRef = useRef<Simulation<DashboardGraphNode, DashboardGraphLink> | null>(null)
+  const dashboardGraphDraggingRef = useRef<string | null>(null)
+  const t = useCallback(
+    (keyOrEn: string, zhOrValues?: string | TemplateValues) => {
+      if (typeof zhOrValues === 'string') {
+        return language === 'zh-TW' ? zhOrValues : keyOrEn
+      }
+      return translate(language, keyOrEn, zhOrValues)
+    },
+    [language],
+  )
+  const languageName = useCallback((code: UiLanguage) => getLanguageLabel(code, language), [language])
+  const tabLabel = useCallback(
+    (key: TabKey) => {
+      switch (key) {
+        case 'dashboard':
+          return t('tab.dashboard')
+        case 'records':
+          return t('tab.records')
+        case 'logs':
+          return t('tab.logs')
+        case 'ai':
+          return t('tab.ai')
+        case 'integrations':
+          return t('tab.integrations')
+        case 'settings':
+          return t('tab.settings')
+        case 'health':
+          return t('tab.health')
+        default:
+          return key
+      }
+    },
+    [t],
+  )
 
   const pushNotice = useCallback((type: Notice['type'], text: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000)
@@ -248,6 +565,227 @@ function App() {
       setBusy(false)
     }
   }, [])
+
+  const dashboardGraphModel = useMemo(() => createDashboardGraph(allRecords, stats), [allRecords, stats])
+
+  useEffect(() => {
+    if (dashboardGraphModel.nodes.length === 0) {
+      setDashboardGraphNodes([])
+      setDashboardGraphLinks([])
+      setDashboardFocusedNodeId(null)
+      dashboardGraphSimulationRef.current?.stop()
+      dashboardGraphSimulationRef.current = null
+      return
+    }
+
+    const seededNodes = dashboardGraphModel.nodes.map((node, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, dashboardGraphModel.nodes.length)
+      return {
+        ...node,
+        x:
+          node.x ??
+          DASHBOARD_GRAPH_WIDTH / 2 +
+            Math.cos(angle) * (node.kind === 'core' ? 0 : node.kind === 'type' ? 170 : node.kind === 'tag' ? 218 : 132),
+        y:
+          node.y ??
+          DASHBOARD_GRAPH_HEIGHT / 2 +
+            Math.sin(angle) * (node.kind === 'core' ? 0 : node.kind === 'type' ? 162 : node.kind === 'tag' ? 210 : 124),
+      }
+    })
+
+    const seededLinks = dashboardGraphModel.links.map((link) => ({ ...link }))
+
+    const simulation = forceSimulation<DashboardGraphNode>(seededNodes)
+      .force(
+        'link',
+        forceLink<DashboardGraphNode, DashboardGraphLink>(seededLinks)
+          .id((node) => node.id)
+          .distance((link) => {
+            if (link.relation === 'core-type') {
+              return 110
+            }
+            if (link.relation === 'type-record') {
+              return 88
+            }
+            return 72
+          })
+          .strength((link) => {
+            if (link.relation === 'record-tag') {
+              return 0.23
+            }
+            return 0.34
+          }),
+      )
+      .force(
+        'charge',
+        forceManyBody<DashboardGraphNode>().strength((node) => {
+          if (node.kind === 'core') {
+            return -560
+          }
+          if (node.kind === 'type') {
+            return -310
+          }
+          if (node.kind === 'tag') {
+            return -180
+          }
+          return -140
+        }),
+      )
+      .force('center', forceCenter(DASHBOARD_GRAPH_WIDTH / 2, DASHBOARD_GRAPH_HEIGHT / 2))
+      .force(
+        'collide',
+        forceCollide<DashboardGraphNode>()
+          .radius((node) => node.radius + 8)
+          .strength(0.86),
+      )
+      .alpha(1)
+      .alphaDecay(0.035)
+
+    dashboardGraphSimulationRef.current?.stop()
+    dashboardGraphSimulationRef.current = simulation
+
+    let frameId = 0
+    const publish = () => {
+      if (frameId) {
+        return
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0
+        setDashboardGraphNodes([...seededNodes])
+        setDashboardGraphLinks([...seededLinks])
+      })
+    }
+
+    simulation.on('tick', publish)
+    publish()
+
+    return () => {
+      if (frameId) {
+        window.cancelAnimationFrame(frameId)
+      }
+      simulation.stop()
+      if (dashboardGraphSimulationRef.current === simulation) {
+        dashboardGraphSimulationRef.current = null
+      }
+    }
+  }, [dashboardGraphModel])
+
+  const focusRecordFromGraph = useCallback((jsonPath: string) => {
+    const target = allRecords.find((record) => record.jsonPath === jsonPath)
+    if (!target) {
+      return
+    }
+    setSelectedRecordPath(target.jsonPath ?? null)
+    setRecordForm(formFromRecord(target))
+  }, [allRecords])
+
+  const handleDashboardGraphNodeActivate = useCallback(
+    (node: DashboardGraphNode) => {
+      setDashboardFocusedNodeId(node.id)
+
+      if (node.kind === 'type' && node.recordType) {
+        setRecordKeyword('')
+        setRecordFilterType(node.recordType)
+        setActiveTab('records')
+        pushNotice('info', t(`Switched Records filter to ${node.recordType}.`, `已切換到 ${node.recordType} 類型篩選。`))
+        return
+      }
+
+      if (node.kind === 'tag' && node.tag) {
+        setRecordFilterType('all')
+        setRecordKeyword(node.tag)
+        setActiveTab('records')
+        pushNotice('info', t(`Searching Records by tag: ${node.tag}`, `已以標籤搜尋紀錄：${node.tag}`))
+        return
+      }
+
+      if (node.kind === 'record' && node.jsonPath) {
+        focusRecordFromGraph(node.jsonPath)
+        setActiveTab('records')
+        pushNotice('info', t('Opened record in Records panel.', '已在紀錄面板開啟該筆紀錄。'))
+      }
+    },
+    [focusRecordFromGraph, pushNotice, t],
+  )
+
+  const toGraphPoint = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    const svg = dashboardGraphSvgRef.current
+    if (!svg) {
+      return null
+    }
+    const ctm = svg.getScreenCTM()
+    if (!ctm) {
+      return null
+    }
+    const point = svg.createSVGPoint()
+    point.x = event.clientX
+    point.y = event.clientY
+    const graphPoint = point.matrixTransform(ctm.inverse())
+    return {
+      x: clamp(graphPoint.x, 16, DASHBOARD_GRAPH_WIDTH - 16),
+      y: clamp(graphPoint.y, 16, DASHBOARD_GRAPH_HEIGHT - 16),
+    }
+  }, [])
+
+  const handleDashboardNodePointerDown = useCallback(
+    (nodeId: string, event: React.PointerEvent<SVGGElement>) => {
+      event.stopPropagation()
+      dashboardGraphDraggingRef.current = nodeId
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+
+      const simulation = dashboardGraphSimulationRef.current
+      if (!simulation) {
+        return
+      }
+      const node = simulation.nodes().find((item) => item.id === nodeId)
+      if (!node) {
+        return
+      }
+      node.fx = node.x ?? DASHBOARD_GRAPH_WIDTH / 2
+      node.fy = node.y ?? DASHBOARD_GRAPH_HEIGHT / 2
+      simulation.alphaTarget(0.28).restart()
+    },
+    [],
+  )
+
+  const releaseDashboardDrag = useCallback(() => {
+    const draggingId = dashboardGraphDraggingRef.current
+    if (!draggingId) {
+      return
+    }
+    const simulation = dashboardGraphSimulationRef.current
+    if (simulation) {
+      const node = simulation.nodes().find((item) => item.id === draggingId)
+      if (node) {
+        node.fx = null
+        node.fy = null
+      }
+      simulation.alphaTarget(0)
+    }
+    dashboardGraphDraggingRef.current = null
+  }, [])
+
+  const handleDashboardGraphPointerMove = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      const draggingId = dashboardGraphDraggingRef.current
+      if (!draggingId) {
+        return
+      }
+      const point = toGraphPoint(event)
+      const simulation = dashboardGraphSimulationRef.current
+      if (!point || !simulation) {
+        return
+      }
+      const node = simulation.nodes().find((item) => item.id === draggingId)
+      if (!node) {
+        return
+      }
+      node.fx = point.x
+      node.fy = point.y
+      simulation.alphaTarget(0.28).restart()
+    },
+    [toGraphPoint],
+  )
 
   const visibleRecords = useMemo(
     () => displayedRecords.slice(0, Math.min(visibleCount, displayedRecords.length)),
@@ -268,6 +806,61 @@ function App() {
     () => appSettings.profiles.find((item) => item.id === selectedProfileId) ?? null,
     [appSettings.profiles, selectedProfileId],
   )
+
+  const dashboardResolvedLinks = useMemo(
+    () =>
+      dashboardGraphLinks.map((link) => ({
+        id: link.id,
+        sourceId: linkNodeId(link.source),
+        targetId: linkNodeId(link.target),
+        relation: link.relation,
+      })),
+    [dashboardGraphLinks],
+  )
+
+  const dashboardFocusedNode = useMemo(
+    () => dashboardGraphNodes.find((node) => node.id === dashboardFocusedNodeId) ?? null,
+    [dashboardFocusedNodeId, dashboardGraphNodes],
+  )
+
+  const dashboardFocusNeighbors = useMemo(() => {
+    if (!dashboardFocusedNodeId) {
+      return new Set<string>()
+    }
+    const related = new Set<string>([dashboardFocusedNodeId])
+    for (const link of dashboardResolvedLinks) {
+      if (link.sourceId === dashboardFocusedNodeId || link.targetId === dashboardFocusedNodeId) {
+        related.add(link.sourceId)
+        related.add(link.targetId)
+      }
+    }
+    return related
+  }, [dashboardFocusedNodeId, dashboardResolvedLinks])
+
+  useEffect(() => {
+    if (!dashboardFocusedNodeId) {
+      return
+    }
+    if (!dashboardGraphNodes.some((node) => node.id === dashboardFocusedNodeId)) {
+      setDashboardFocusedNodeId(null)
+    }
+  }, [dashboardFocusedNodeId, dashboardGraphNodes])
+
+  const centralHomeDisplay = useMemo(() => {
+    const raw = (centralHome || centralHomeInput).trim()
+    if (!raw) {
+      return {
+        name: '',
+        fullPath: '',
+      }
+    }
+    const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '')
+    const parts = normalized.split('/').filter(Boolean)
+    return {
+      name: parts[parts.length - 1] ?? raw,
+      fullPath: raw,
+    }
+  }, [centralHome, centralHomeInput])
 
   const refreshCore = useCallback(
     async (home: string) => {
@@ -326,7 +919,7 @@ function App() {
   const loadCentralHome = useCallback(
     async (input = centralHomeInput) => {
       if (!input.trim()) {
-        pushNotice('error', 'Central Home path is required.')
+        pushNotice('error', t('Central Home path is required.', '中央路徑不可為空。'))
         return
       }
 
@@ -353,13 +946,26 @@ function App() {
         pushNotice(
           'success',
           resolved.corrected
-            ? `Loaded and normalized to ${resolved.centralHome}`
-            : `Loaded ${resolved.centralHome}`,
+            ? t(`Loaded and normalized to ${resolved.centralHome}`, `已載入並正規化為 ${resolved.centralHome}`)
+            : t(`Loaded ${resolved.centralHome}`, `已載入 ${resolved.centralHome}`),
         )
       })
     },
-    [centralHomeInput, pushNotice, refreshCore, withBusy],
+    [centralHomeInput, pushNotice, refreshCore, t, withBusy],
   )
+
+  const handlePickCentralHome = useCallback(async () => {
+    try {
+      const selected = await pickCentralHomeDirectory(centralHome || centralHomeInput || undefined)
+      if (!selected) {
+        return
+      }
+      setCentralHomeInput(selected)
+      await loadCentralHome(selected)
+    } catch (error) {
+      pushNotice('error', t(`Error: ${String(error)}`, `錯誤：${String(error)}`))
+    }
+  }, [centralHome, centralHomeInput, loadCentralHome, pushNotice, t])
 
   const loadSettings = useCallback(async () => {
     const [settings, hasKey, notionKey] = await Promise.all([
@@ -384,6 +990,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    localStorage.setItem(LOCAL_STORAGE_LANGUAGE_KEY, language)
+  }, [language])
+
+  useEffect(() => {
     void (async () => {
       try {
         const settings = await loadSettings()
@@ -400,10 +1010,10 @@ function App() {
           await loadCentralHome(active.centralHome)
         }
       } catch (error) {
-        pushNotice('error', String(error))
+        pushNotice('error', t(`Error: ${String(error)}`, `錯誤：${String(error)}`))
       }
     })()
-  }, [loadCentralHome, loadSettings, pushNotice])
+  }, [loadCentralHome, loadSettings, pushNotice, t])
 
   useEffect(() => {
     if (!centralHome) {
@@ -411,11 +1021,11 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
-      void applySearch().catch((error) => pushNotice('error', String(error)))
+      void applySearch().catch((error) => pushNotice('error', t(`Error: ${String(error)}`, `錯誤：${String(error)}`)))
     }, 250)
 
     return () => window.clearTimeout(timer)
-  }, [applySearch, centralHome, pushNotice])
+  }, [applySearch, centralHome, pushNotice, t])
 
   useEffect(() => {
     if (!centralHome) {
@@ -431,7 +1041,7 @@ function App() {
             const data = await refreshCore(centralHome)
             setDisplayedRecords(data.records)
             setSearchMeta(null)
-            pushNotice('info', 'Auto refreshed after external updates.')
+            pushNotice('info', t('Auto refreshed after external updates.', '偵測到外部更新，已自動刷新。'))
           }
           setFingerprint(next)
         } catch {
@@ -441,11 +1051,11 @@ function App() {
     }, interval)
 
     return () => window.clearInterval(handle)
-  }, [appSettings.pollIntervalSec, centralHome, fingerprint, pushNotice, refreshCore])
+  }, [appSettings.pollIntervalSec, centralHome, fingerprint, pushNotice, refreshCore, t])
 
   const handleSaveRecord = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
 
@@ -464,17 +1074,17 @@ function App() {
         setRecordForm(formFromRecord(matched))
       }
 
-      pushNotice('success', 'Record saved.')
+      pushNotice('success', t('Record saved.', '紀錄已儲存。'))
     })
-  }, [centralHome, pushNotice, recordForm, refreshCore, selectedRecordPath, withBusy])
+  }, [centralHome, pushNotice, recordForm, refreshCore, selectedRecordPath, t, withBusy])
 
   const handleDeleteRecord = useCallback(async () => {
     if (!centralHome || !selectedRecordPath) {
-      pushNotice('error', 'Select a record first.')
+      pushNotice('error', t('Select a record first.', '請先選擇一筆紀錄。'))
       return
     }
 
-    if (!window.confirm('Delete selected record?')) {
+    if (!window.confirm(t('Delete selected record?', '要刪除選取的紀錄嗎？'))) {
       return
     }
 
@@ -493,13 +1103,13 @@ function App() {
         setRecordForm(emptyForm())
       }
 
-      pushNotice('success', 'Record deleted.')
+      pushNotice('success', t('Record deleted.', '紀錄已刪除。'))
     })
-  }, [centralHome, pushNotice, refreshCore, selectedRecordPath, withBusy])
+  }, [centralHome, pushNotice, refreshCore, selectedRecordPath, t, withBusy])
 
   const handleRunAi = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
 
@@ -513,13 +1123,13 @@ function App() {
         maxRecords: aiMaxRecords,
       })
       setAiResult(result.content)
-      pushNotice('success', `${result.provider} analysis completed.`)
+      pushNotice('success', t(`${result.provider} analysis completed.`, `${result.provider} 分析已完成。`))
     })
-  }, [aiIncludeLogs, aiMaxRecords, aiModel, aiPrompt, aiProvider, centralHome, pushNotice, withBusy])
+  }, [aiIncludeLogs, aiMaxRecords, aiModel, aiPrompt, aiProvider, centralHome, pushNotice, t, withBusy])
 
   const handleSaveApiKey = useCallback(async () => {
     if (!openaiKeyDraft.trim()) {
-      pushNotice('error', 'API key cannot be empty.')
+      pushNotice('error', t('API key cannot be empty.', 'API 金鑰不可為空。'))
       return
     }
 
@@ -527,21 +1137,21 @@ function App() {
       await setOpenaiApiKey(openaiKeyDraft.trim())
       setOpenaiKeyDraft('')
       setHasOpenaiKey(true)
-      pushNotice('success', 'OpenAI API key saved to Keychain.')
+      pushNotice('success', t('OpenAI API key saved to Keychain.', 'OpenAI API 金鑰已儲存至 Keychain。'))
     })
-  }, [openaiKeyDraft, pushNotice, withBusy])
+  }, [openaiKeyDraft, pushNotice, t, withBusy])
 
   const handleClearApiKey = useCallback(async () => {
     await withBusy(async () => {
       await clearOpenaiApiKey()
       setHasOpenaiKey(false)
-      pushNotice('success', 'OpenAI API key cleared.')
+      pushNotice('success', t('OpenAI API key cleared.', 'OpenAI API 金鑰已清除。'))
     })
-  }, [pushNotice, withBusy])
+  }, [pushNotice, t, withBusy])
 
   const handleSaveNotionKey = useCallback(async () => {
     if (!notionKeyDraft.trim()) {
-      pushNotice('error', 'Notion API key cannot be empty.')
+      pushNotice('error', t('Notion API key cannot be empty.', 'Notion API 金鑰不可為空。'))
       return
     }
 
@@ -549,25 +1159,25 @@ function App() {
       await setNotionApiKey(notionKeyDraft.trim())
       setNotionKeyDraft('')
       setHasNotionKey(true)
-      pushNotice('success', 'Notion API key saved to Keychain.')
+      pushNotice('success', t('Notion API key saved to Keychain.', 'Notion API 金鑰已儲存至 Keychain。'))
     })
-  }, [notionKeyDraft, pushNotice, withBusy])
+  }, [notionKeyDraft, pushNotice, t, withBusy])
 
   const handleClearNotionKey = useCallback(async () => {
     await withBusy(async () => {
       await clearNotionApiKey()
       setHasNotionKey(false)
-      pushNotice('success', 'Notion API key cleared.')
+      pushNotice('success', t('Notion API key cleared.', 'Notion API 金鑰已清除。'))
     })
-  }, [pushNotice, withBusy])
+  }, [pushNotice, t, withBusy])
 
   const handleSyncSelectedToNotion = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
     if (!selectedRecordPath) {
-      pushNotice('error', 'Select a record first.')
+      pushNotice('error', t('Select a record first.', '請先選擇一筆紀錄。'))
       return
     }
 
@@ -583,11 +1193,11 @@ function App() {
       setSearchMeta(null)
       setNotionSyncReport(JSON.stringify(result, null, 2))
       if (result.conflict) {
-        pushNotice('error', result.notionError || 'Conflict detected.')
+        pushNotice('error', result.notionError || t('Conflict detected.', '偵測到衝突。'))
       } else if (result.notionSyncStatus === 'SUCCESS') {
-        pushNotice('success', `Notion sync (${result.action}) done.`)
+        pushNotice('success', t(`Notion sync (${result.action}) done.`, `Notion 同步（${result.action}）完成。`))
       } else {
-        pushNotice('error', result.notionError || 'Notion sync failed.')
+        pushNotice('error', result.notionError || t('Notion sync failed.', 'Notion 同步失敗。'))
       }
     })
   }, [
@@ -597,12 +1207,13 @@ function App() {
     pushNotice,
     refreshCore,
     selectedRecordPath,
+    t,
     withBusy,
   ])
 
   const handleSyncVisibleToNotion = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
 
@@ -611,7 +1222,7 @@ function App() {
       .filter((item): item is string => Boolean(item))
 
     if (targets.length === 0) {
-      pushNotice('error', 'No record json paths available in current view.')
+      pushNotice('error', t('No record json paths available in current view.', '目前視圖沒有可用的紀錄路徑。'))
       return
     }
 
@@ -628,7 +1239,10 @@ function App() {
       setNotionSyncReport(JSON.stringify(result, null, 2))
       pushNotice(
         'success',
-        `Notion batch sync done. success=${result.success}, failed=${result.failed}, conflicts=${result.conflicts}.`,
+        t(
+          `Notion batch sync done. success=${result.success}, failed=${result.failed}, conflicts=${result.conflicts}.`,
+          `Notion 批次同步完成。成功=${result.success}，失敗=${result.failed}，衝突=${result.conflicts}。`,
+        ),
       )
     })
   }, [
@@ -638,12 +1252,13 @@ function App() {
     notionConflictStrategy,
     pushNotice,
     refreshCore,
+    t,
     withBusy,
   ])
 
   const handlePullFromNotion = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
     await withBusy(async () => {
@@ -658,7 +1273,10 @@ function App() {
       setNotionSyncReport(JSON.stringify(result, null, 2))
       pushNotice(
         'success',
-        `Pulled from Notion. success=${result.success}, failed=${result.failed}, conflicts=${result.conflicts}.`,
+        t(
+          `Pulled from Notion. success=${result.success}, failed=${result.failed}, conflicts=${result.conflicts}.`,
+          `已從 Notion 拉取。成功=${result.success}，失敗=${result.failed}，衝突=${result.conflicts}。`,
+        ),
       )
     })
   }, [
@@ -667,6 +1285,7 @@ function App() {
     notionConflictStrategy,
     pushNotice,
     refreshCore,
+    t,
     withBusy,
   ])
 
@@ -674,9 +1293,9 @@ function App() {
     await withBusy(async () => {
       const result = await notebooklmHealthCheck()
       setNotebookHealthText(JSON.stringify(result, null, 2))
-      pushNotice('success', 'NotebookLM health checked.')
+      pushNotice('success', t('NotebookLM health checked.', 'NotebookLM 健康檢查完成。'))
     })
-  }, [pushNotice, withBusy])
+  }, [pushNotice, t, withBusy])
 
   const handleNotebookList = useCallback(async () => {
     await withBusy(async () => {
@@ -685,9 +1304,9 @@ function App() {
       if (!selectedNotebookId && notebooks.length > 0) {
         setSelectedNotebookId(notebooks[0].id)
       }
-      pushNotice('success', `Loaded ${notebooks.length} notebooks.`)
+      pushNotice('success', t(`Loaded ${notebooks.length} notebooks.`, `已載入 ${notebooks.length} 個筆記本。`))
     })
-  }, [pushNotice, selectedNotebookId, withBusy])
+  }, [pushNotice, selectedNotebookId, t, withBusy])
 
   const handleNotebookCreate = useCallback(async () => {
     await withBusy(async () => {
@@ -712,13 +1331,13 @@ function App() {
       setAppSettings(nextSettings)
       const saved = await saveAppSettings(nextSettings)
       setAppSettings(saved)
-      pushNotice('success', `Notebook created: ${created.name}`)
+      pushNotice('success', t(`Notebook created: ${created.name}`, `已建立筆記本：${created.name}`))
     })
-  }, [appSettings, newNotebookTitle, pushNotice, withBusy])
+  }, [appSettings, newNotebookTitle, pushNotice, t, withBusy])
 
   const handleNotebookSetDefault = useCallback(async () => {
     if (!selectedNotebookId) {
-      pushNotice('error', 'Select a notebook first.')
+      pushNotice('error', t('Select a notebook first.', '請先選擇一個筆記本。'))
       return
     }
     const nextSettings: AppSettings = {
@@ -734,28 +1353,28 @@ function App() {
     await withBusy(async () => {
       const saved = await saveAppSettings(nextSettings)
       setAppSettings(saved)
-      pushNotice('success', 'Default NotebookLM notebook updated.')
+      pushNotice('success', t('Default NotebookLM notebook updated.', 'NotebookLM 預設筆記本已更新。'))
     })
-  }, [appSettings, pushNotice, selectedNotebookId, withBusy])
+  }, [appSettings, pushNotice, selectedNotebookId, t, withBusy])
 
   const handleAddSelectedRecordToNotebook = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
     if (!selectedRecord?.jsonPath) {
-      pushNotice('error', 'Select a record first.')
+      pushNotice('error', t('Select a record first.', '請先選擇一筆紀錄。'))
       return
     }
     if (!selectedNotebookId) {
-      pushNotice('error', 'Select a notebook first.')
+      pushNotice('error', t('Select a notebook first.', '請先選擇一個筆記本。'))
       return
     }
 
     await withBusy(async () => {
       const jsonPath = selectedRecord.jsonPath
       if (!jsonPath) {
-        pushNotice('error', 'Selected record has no jsonPath.')
+        pushNotice('error', t('Selected record has no jsonPath.', '選取紀錄缺少 jsonPath。'))
         return
       }
       await notebooklmAddRecordSource({
@@ -763,17 +1382,17 @@ function App() {
         jsonPath,
         notebookId: selectedNotebookId,
       })
-      pushNotice('success', 'Selected record sent to NotebookLM as text source.')
+      pushNotice('success', t('Selected record sent to NotebookLM as text source.', '已將選取紀錄送到 NotebookLM 作為文字來源。'))
     })
-  }, [centralHome, pushNotice, selectedNotebookId, selectedRecord, withBusy])
+  }, [centralHome, pushNotice, selectedNotebookId, selectedRecord, t, withBusy])
 
   const handleNotebookAsk = useCallback(async () => {
     if (!selectedNotebookId) {
-      pushNotice('error', 'Select a notebook first.')
+      pushNotice('error', t('Select a notebook first.', '請先選擇一個筆記本。'))
       return
     }
     if (!notebookQuestion.trim()) {
-      pushNotice('error', 'Question cannot be empty.')
+      pushNotice('error', t('Question cannot be empty.', '問題不可為空。'))
       return
     }
 
@@ -785,13 +1404,13 @@ function App() {
       })
       setNotebookAnswer(result.answer)
       setNotebookCitations(result.citations)
-      pushNotice('success', 'NotebookLM answered.')
+      pushNotice('success', t('NotebookLM answered.', 'NotebookLM 已回覆。'))
     })
-  }, [notebookQuestion, pushNotice, selectedNotebookId, withBusy])
+  }, [notebookQuestion, pushNotice, selectedNotebookId, t, withBusy])
 
   const handleRebuildIndex = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
 
@@ -799,15 +1418,18 @@ function App() {
       const result = await rebuildSearchIndex(centralHome)
       pushNotice(
         'success',
-        `Indexed ${result.indexedCount} records in ${result.tookMs} ms.`,
+        t(
+          `Indexed ${result.indexedCount} records in ${result.tookMs} ms.`,
+          `已建立 ${result.indexedCount} 筆紀錄索引，耗時 ${result.tookMs} ms。`,
+        ),
       )
       setHealth(await getHealthDiagnostics(centralHome))
     })
-  }, [centralHome, pushNotice, withBusy])
+  }, [centralHome, pushNotice, t, withBusy])
 
   const handleExportReport = useCallback(async () => {
     if (!centralHome) {
-      pushNotice('error', 'Load Central Home first.')
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
     }
 
@@ -818,9 +1440,9 @@ function App() {
         title: reportTitle.trim() || undefined,
         recentDays: reportDays,
       })
-      pushNotice('success', `Report exported: ${result.outputPath}`)
+      pushNotice('success', t(`Report exported: ${result.outputPath}`, `報告已匯出：${result.outputPath}`))
     })
-  }, [centralHome, pushNotice, reportDays, reportPath, reportTitle, withBusy])
+  }, [centralHome, pushNotice, reportDays, reportPath, reportTitle, t, withBusy])
 
   const handleSaveSettings = useCallback(async (next: AppSettings) => {
     await withBusy(async () => {
@@ -829,9 +1451,9 @@ function App() {
       if (saved.activeProfileId) {
         setSelectedProfileId(saved.activeProfileId)
       }
-      pushNotice('success', 'Settings saved.')
+      pushNotice('success', t('Settings saved.', '設定已儲存。'))
     })
-  }, [pushNotice, withBusy])
+  }, [pushNotice, t, withBusy])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -854,7 +1476,7 @@ function App() {
         const nextTab = TAB_ITEMS[index]
         if (nextTab) {
           event.preventDefault()
-          setActiveTab(nextTab.key)
+          setActiveTab(nextTab)
         }
       }
 
@@ -871,26 +1493,31 @@ function App() {
     () => [
       {
         id: 'cmd-load-home',
-        label: 'Load Central Home',
+        label: t('Load Central Home', '載入中央路徑'),
         run: () => void loadCentralHome(),
       },
       {
+        id: 'cmd-choose-home',
+        label: t('Choose Central Home Folder', '選擇中央路徑資料夾'),
+        run: () => void handlePickCentralHome(),
+      },
+      {
         id: 'cmd-refresh',
-        label: 'Refresh Data',
+        label: t('Refresh Data', '刷新資料'),
         run: () => {
           if (centralHome) {
             void withBusy(async () => {
               const data = await refreshCore(centralHome)
               setDisplayedRecords(data.records)
               setSearchMeta(null)
-              pushNotice('success', 'Data refreshed.')
+              pushNotice('success', t('Data refreshed.', '資料已刷新。'))
             })
           }
         },
       },
       {
         id: 'cmd-new-record',
-        label: 'New Record',
+        label: t('New Record', '新增紀錄'),
         run: () => {
           setSelectedRecordPath(null)
           setRecordForm(emptyForm())
@@ -899,27 +1526,27 @@ function App() {
       },
       {
         id: 'cmd-save-record',
-        label: 'Save Record',
+        label: t('Save Record', '儲存紀錄'),
         run: () => void handleSaveRecord(),
       },
       {
         id: 'cmd-sync-record-notion',
-        label: 'Bidirectional Sync Selected Record',
+        label: t('Bidirectional Sync Selected Record', '雙向同步選取紀錄'),
         run: () => void handleSyncSelectedToNotion(),
       },
       {
         id: 'cmd-pull-notion',
-        label: 'Pull Latest from Notion Database',
+        label: t('Pull Latest from Notion Database', '從 Notion 拉取最新資料'),
         run: () => void handlePullFromNotion(),
       },
       {
         id: 'cmd-rebuild-index',
-        label: 'Rebuild Search Index',
+        label: t('Rebuild Search Index', '重建搜尋索引'),
         run: () => void handleRebuildIndex(),
       },
       {
         id: 'cmd-run-local-ai',
-        label: 'Run Local AI Analysis',
+        label: t('Run Local AI Analysis', '執行本地 AI 分析'),
         run: () => {
           setAiProvider('local')
           setActiveTab('ai')
@@ -928,23 +1555,24 @@ function App() {
       },
       {
         id: 'cmd-export-report',
-        label: 'Export Markdown Report',
+        label: t('Export Markdown Report', '匯出 Markdown 報告'),
         run: () => void handleExportReport(),
       },
       {
         id: 'cmd-list-notebooks',
-        label: 'Refresh NotebookLM List',
+        label: t('Refresh NotebookLM List', '刷新 NotebookLM 清單'),
         run: () => void handleNotebookList(),
       },
       ...TAB_ITEMS.map((item) => ({
-        id: `cmd-tab-${item.key}`,
-        label: `Go to ${item.label}`,
-        run: () => setActiveTab(item.key),
+        id: `cmd-tab-${item}`,
+        label: `${t('Go to', '前往')} ${tabLabel(item)}`,
+        run: () => setActiveTab(item),
       })),
     ],
     [
       centralHome,
       handleExportReport,
+      handlePickCentralHome,
       handleNotebookList,
       handlePullFromNotion,
       handleRebuildIndex,
@@ -954,6 +1582,8 @@ function App() {
       loadCentralHome,
       pushNotice,
       refreshCore,
+      t,
+      tabLabel,
       withBusy,
     ],
   )
@@ -978,62 +1608,315 @@ function App() {
 
   function renderDashboard() {
     if (!stats) {
-      return <div className="panel">Load a Central Home to see metrics.</div>
+      return <div className="panel dashboard-empty">{t('Load a Central Home to see metrics.', '請先載入中央記錄路徑以查看儀表板。')}</div>
     }
+
+    const maxTypeCount = Math.max(1, ...RECORD_TYPES.map((item) => stats.typeCounts[item] ?? 0))
+    const maxDailyCount = Math.max(1, ...stats.recentDailyCounts.map((row) => row.count))
+
+    const dominantType = RECORD_TYPES.reduce<{ type: RecordType; count: number }>(
+      (acc, item) => {
+        const count = stats.typeCounts[item] ?? 0
+        if (count > acc.count) {
+          return { type: item, count }
+        }
+        return acc
+      },
+      { type: RECORD_TYPES[0], count: stats.typeCounts[RECORD_TYPES[0]] ?? 0 },
+    )
+
+    const hottestDay = stats.recentDailyCounts.reduce<{ date: string; count: number }>(
+      (acc, row) => (row.count > acc.count ? row : acc),
+      stats.recentDailyCounts[0] ?? { date: '-', count: 0 },
+    )
+
+    const syncHealthPercent =
+      stats.totalRecords === 0
+        ? 100
+        : Math.max(0, Math.round(((stats.totalRecords - stats.pendingSyncCount) / stats.totalRecords) * 100))
+
+    const focusedLinkNodeIds = dashboardFocusedNodeId
+      ? dashboardResolvedLinks.reduce<string[]>((acc, link) => {
+          if (link.sourceId === dashboardFocusedNodeId) {
+            acc.push(link.targetId)
+          } else if (link.targetId === dashboardFocusedNodeId) {
+            acc.push(link.sourceId)
+          }
+          return acc
+        }, [])
+      : []
+
+    const focusedLinkedNodes = [...new Set(focusedLinkNodeIds)]
+      .map((id) => dashboardGraphNodes.find((node) => node.id === id))
+      .filter((node): node is DashboardGraphNode => Boolean(node))
+      .slice(0, 8)
+
+    const focusedRecordCount = (() => {
+      if (!dashboardFocusedNode) {
+        return allRecords.length
+      }
+      if (dashboardFocusedNode.kind === 'core') {
+        return allRecords.length
+      }
+      if (dashboardFocusedNode.kind === 'type' && dashboardFocusedNode.recordType) {
+        return allRecords.filter((item) => item.recordType === dashboardFocusedNode.recordType).length
+      }
+      if (dashboardFocusedNode.kind === 'tag' && dashboardFocusedNode.tag) {
+        return allRecords.filter((item) => item.tags.includes(dashboardFocusedNode.tag || '')).length
+      }
+      if (dashboardFocusedNode.kind === 'record') {
+        return 1
+      }
+      return 0
+    })()
 
     return (
       <div className="dashboard-grid">
+        <div className="panel dashboard-hero">
+          <div className="dashboard-hero-content">
+            <p className="eyebrow">{t('Knowledge Pulse', '知識脈動')}</p>
+            <h3>{t('Central Log Control Tower', 'Central Log 控制塔')}</h3>
+            <p className="muted">
+              {t(
+                'Monitor knowledge volume, sync health, and recent activity rhythm in real time.',
+                '即時掌握筆記累積、同步健康度與近 7 天活躍節奏。',
+              )}
+            </p>
+          </div>
+          <div className="hero-metrics">
+            <div className="hero-metric">
+              <span>{t('Dominant Type', '主要類型')}</span>
+              <strong>{dominantType.type}</strong>
+              <small>{t(`${dominantType.count} records`, `${dominantType.count} 筆`)}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('Hottest Day', '最高活躍日')}</span>
+              <strong>{hottestDay.date}</strong>
+              <small>{t(`${hottestDay.count} events`, `${hottestDay.count} 次事件`)}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('Top Concept', '熱門概念')}</span>
+              <strong>{stats.topTags[0]?.tag ?? t('none', '無')}</strong>
+              <small>{t(`${stats.topTags[0]?.count ?? 0} mentions`, `${stats.topTags[0]?.count ?? 0} 次提及`)}</small>
+            </div>
+          </div>
+        </div>
+
         <div className="kpi-row">
-          <div className="kpi-card">
-            <p className="kpi-label">Records</p>
+          <div className="kpi-card records">
+            <p className="kpi-label">{t('Records', '紀錄')}</p>
+            <p className="kpi-sub">{t('Total knowledge assets', '知識資產總數')}</p>
             <p className="kpi-value">{stats.totalRecords}</p>
           </div>
-          <div className="kpi-card">
-            <p className="kpi-label">Logs</p>
+          <div className="kpi-card logs">
+            <p className="kpi-label">{t('Logs', '日誌')}</p>
+            <p className="kpi-sub">{t('Captured process traces', '流程追蹤紀錄')}</p>
             <p className="kpi-value">{stats.totalLogs}</p>
           </div>
-          <div className="kpi-card">
-            <p className="kpi-label">Pending Sync</p>
-            <p className="kpi-value">{stats.pendingSyncCount}</p>
+          <div className="kpi-card sync">
+            <p className="kpi-label">{t('Sync Health', '同步健康度')}</p>
+            <p className="kpi-sub">
+              {t(`${stats.pendingSyncCount} pending sync`, `${stats.pendingSyncCount} 筆待同步`)}
+            </p>
+            <p className="kpi-value">{syncHealthPercent}%</p>
+            <p className="kpi-trend">{t('ready state', '可用狀態')}</p>
           </div>
         </div>
 
-        <div className="panel-grid-2">
-          <div className="panel">
-            <h3>Type Distribution</h3>
-            <ul className="simple-list">
-              {RECORD_TYPES.map((item) => (
-                <li key={item}>
-                  <span>{item}</span>
-                  <strong>{stats.typeCounts[item] ?? 0}</strong>
-                </li>
-              ))}
-            </ul>
+        <div className="panel panel-strong dashboard-force-panel">
+          <div className="panel-head-inline">
+            <h3>{t('Interactive Knowledge Graph', '互動知識圖譜')}</h3>
+            <span className="muted">{t('Drag · Focus · Click to filter Records', '拖曳 · 聚焦 · 點擊即可篩選紀錄')}</span>
           </div>
 
-          <div className="panel">
-            <h3>Recent 7 Days</h3>
-            <ul className="simple-list">
-              {stats.recentDailyCounts.map((row) => (
-                <li key={row.date}>
-                  <span>{row.date}</span>
-                  <strong>{row.count}</strong>
-                </li>
-              ))}
-            </ul>
+          <div className="dashboard-force-layout">
+            <div className="dashboard-force-canvas">
+              <svg
+                ref={dashboardGraphSvgRef}
+                className="dashboard-force-svg"
+                viewBox={`0 0 ${DASHBOARD_GRAPH_WIDTH} ${DASHBOARD_GRAPH_HEIGHT}`}
+                role="img"
+                aria-label={t('Knowledge graph visualization', '知識圖譜視覺化')}
+                onPointerMove={handleDashboardGraphPointerMove}
+                onPointerUp={releaseDashboardDrag}
+                onPointerLeave={releaseDashboardDrag}
+                onPointerCancel={releaseDashboardDrag}
+                onClick={() => setDashboardFocusedNodeId(null)}
+              >
+                <defs>
+                  <radialGradient id="graphGlow" cx="50%" cy="50%" r="60%">
+                    <stop offset="0%" stopColor="rgba(98, 222, 255, 0.34)" />
+                    <stop offset="100%" stopColor="rgba(12, 19, 40, 0)" />
+                  </radialGradient>
+                </defs>
+                <rect x={0} y={0} width={DASHBOARD_GRAPH_WIDTH} height={DASHBOARD_GRAPH_HEIGHT} fill="url(#graphGlow)" />
+
+                {dashboardResolvedLinks.map((link) => {
+                  const sourceNode = dashboardGraphNodes.find((node) => node.id === link.sourceId)
+                  const targetNode = dashboardGraphNodes.find((node) => node.id === link.targetId)
+                  if (!sourceNode || !targetNode) {
+                    return null
+                  }
+                  const active =
+                    !dashboardFocusedNodeId ||
+                    link.sourceId === dashboardFocusedNodeId ||
+                    link.targetId === dashboardFocusedNodeId
+                  return (
+                    <line
+                      key={link.id}
+                      className={`graph-link ${link.relation} ${active ? 'active' : 'dim'}`}
+                      x1={sourceNode.x ?? 0}
+                      y1={sourceNode.y ?? 0}
+                      x2={targetNode.x ?? 0}
+                      y2={targetNode.y ?? 0}
+                    />
+                  )
+                })}
+
+                {dashboardGraphNodes.map((node) => {
+                  const x = node.x ?? DASHBOARD_GRAPH_WIDTH / 2
+                  const y = node.y ?? DASHBOARD_GRAPH_HEIGHT / 2
+                  const focused = dashboardFocusedNodeId === node.id
+                  const dimmed = Boolean(dashboardFocusedNodeId) && !dashboardFocusNeighbors.has(node.id)
+                  return (
+                    <g
+                      key={node.id}
+                      className={`graph-node kind-${node.kind}${focused ? ' focused' : ''}${dimmed ? ' dimmed' : ''}`}
+                      transform={`translate(${x}, ${y})`}
+                      onPointerDown={(event) => handleDashboardNodePointerDown(node.id, event)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleDashboardGraphNodeActivate(node)
+                      }}
+                    >
+                      <circle
+                        r={node.radius}
+                        style={{
+                          fill: node.color,
+                        }}
+                      />
+                      <text
+                        className="graph-node-label"
+                        x={node.kind === 'record' ? node.radius + 8 : 0}
+                        y={4}
+                        textAnchor={node.kind === 'record' ? 'start' : 'middle'}
+                      >
+                        {node.label}
+                      </text>
+                    </g>
+                  )
+                })}
+              </svg>
+            </div>
+
+            <aside className="dashboard-force-inspector">
+              <div className="inspector-card">
+                <p className="eyebrow">{t('Graph Focus', '圖譜焦點')}</p>
+                <h4>{dashboardFocusedNode ? dashboardFocusedNode.label : t('All Nodes', '所有節點')}</h4>
+                <p className="muted">
+                  {dashboardFocusedNode
+                    ? t(
+                        `${dashboardFocusedNode.kind} · ${focusedRecordCount} related records`,
+                        `${dashboardFocusedNode.kind} · 關聯 ${focusedRecordCount} 筆紀錄`,
+                      )
+                    : t('Click a node to inspect and route to Records.', '點擊節點可查看詳情並跳轉到紀錄篩選。')}
+                </p>
+                {dashboardFocusedNode && (
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    onClick={() => handleDashboardGraphNodeActivate(dashboardFocusedNode)}
+                  >
+                    {t('Open in Records', '在紀錄頁開啟')}
+                  </button>
+                )}
+              </div>
+
+              <div className="inspector-card">
+                <p className="eyebrow">{t('Connected Nodes', '關聯節點')}</p>
+                {focusedLinkedNodes.length === 0 ? (
+                  <p className="muted">{t('No specific focus yet.', '目前尚未聚焦特定節點。')}</p>
+                ) : (
+                  <ul className="inspector-node-list">
+                    {focusedLinkedNodes.map((node) => (
+                      <li key={node.id}>
+                        <button type="button" onClick={() => handleDashboardGraphNodeActivate(node)}>
+                          <span>{node.label}</span>
+                          <small>{node.kind}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </aside>
           </div>
         </div>
 
-        <div className="panel">
-          <h3>Top Tags</h3>
+        <div className="panel-grid-2 dashboard-panels">
+          <div className="panel panel-strong">
+            <h3>{t('Type Distribution', '類型分佈')}</h3>
+            <ul className="distribution-list">
+              {RECORD_TYPES.map((item) => {
+                const count = stats.typeCounts[item] ?? 0
+                const width = count === 0 ? 0 : Math.max(10, Math.round((count / maxTypeCount) * 100))
+                return (
+                  <li key={item} className="dist-item">
+                    <div className="dist-label">
+                      <span>{item}</span>
+                      <strong>{count}</strong>
+                    </div>
+                    <div className="dist-track">
+                      <div className="dist-fill" style={{ width: `${width}%` }} />
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+
+          <div className="panel panel-strong">
+            <h3>{t('Recent Activity Wave', '近期活動波形')}</h3>
+            <div className="trend-grid">
+              {stats.recentDailyCounts.map((row) => {
+                const height = row.count === 0 ? 8 : Math.max(12, Math.round((row.count / maxDailyCount) * 100))
+                return (
+                  <div key={row.date} className="trend-col">
+                    <div className="trend-bar-wrap">
+                      <div className="trend-bar" style={{ height: `${height}%` }} />
+                    </div>
+                    <span className="trend-value">{row.count}</span>
+                    <span className="trend-date">{row.date.slice(5)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="panel panel-strong">
+          <div className="panel-head-inline">
+            <h3>{t('Top Tags', '熱門標籤')}</h3>
+            <span className="muted">{t('Most active concepts in current workspace', '目前工作區最活躍概念')}</span>
+          </div>
           {stats.topTags.length === 0 ? (
-            <p className="muted">No tags yet.</p>
+            <p className="muted">{t('No tags yet.', '尚無標籤。')}</p>
           ) : (
             <div className="tag-grid">
-              {stats.topTags.map((item) => (
-                <span key={item.tag} className="tag-chip">
-                  {item.tag} ({item.count})
-                </span>
+              {stats.topTags.map((item, index) => (
+                <button
+                  key={item.tag}
+                  type="button"
+                  className={index < 3 ? 'tag-chip is-hot tag-chip-btn' : 'tag-chip tag-chip-btn'}
+                  onClick={() => {
+                    setRecordFilterType('all')
+                    setRecordKeyword(item.tag)
+                    setActiveTab('records')
+                  }}
+                >
+                  <span>{item.tag}</span>
+                  <strong>{item.count}</strong>
+                </button>
               ))}
             </div>
           )}
@@ -1043,291 +1926,616 @@ function App() {
   }
 
   function renderRecords() {
+    const selectedTagCount = recordForm.tagsText
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean).length
+    const pendingCount = allRecords.filter((item) => item.notionSyncStatus === 'PENDING').length
+    const typeNodes = RECORD_TYPES.map((type, index) => {
+      const angle = (Math.PI * 2 * index) / RECORD_TYPES.length - Math.PI / 2
+      const count = stats?.typeCounts[type] ?? displayedRecords.filter((item) => item.recordType === type).length
+      return {
+        type,
+        count,
+        x: 50 + Math.cos(angle) * 26,
+        y: 50 + Math.sin(angle) * 24,
+      }
+    })
+    const tagCounts = new Map<string, number>()
+    for (const record of displayedRecords) {
+      for (const tag of record.tags) {
+        if (!tag) {
+          continue
+        }
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+      }
+    }
+    const tagNodes = [...tagCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 16)
+      .map(([tag, count], index, source) => {
+        const angle = (Math.PI * 2 * index) / Math.max(1, source.length) - Math.PI / 2
+        const ring = index % 2 === 0 ? 41 : 33
+        const anchorType = RECORD_TYPES[index % RECORD_TYPES.length]
+        return {
+          tag,
+          count,
+          anchorType,
+          x: 50 + Math.cos(angle) * ring,
+          y: 50 + Math.sin(angle) * ring,
+        }
+      })
+
     return (
-      <div className="records-layout">
-        <div className="panel left-panel">
-          <div className="toolbar-row">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedRecordPath(null)
-                setRecordForm(emptyForm())
-              }}
-            >
-              New
-            </button>
-            <button type="button" onClick={() => void handleSaveRecord()} disabled={busy}>
-              Save
-            </button>
-            <button type="button" onClick={() => void handleDeleteRecord()} disabled={busy || !selectedRecordPath}>
-              Delete
-            </button>
+      <div className="page-stack">
+        <div className="panel section-hero records-hero">
+          <div className="section-hero-content">
+            <p className="eyebrow">{t('records.hero.eyebrow')}</p>
+            <h3>{t('records.hero.title')}</h3>
+            <p className="muted">{t('records.hero.desc')}</p>
           </div>
-
-          <div className="records-filter-grid">
-            <select
-              value={recordFilterType}
-              onChange={(event) => setRecordFilterType(event.target.value as 'all' | RecordType)}
-            >
-              <option value="all">all</option>
-              {RECORD_TYPES.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-            <input
-              placeholder="Keyword (title/body/tags)"
-              value={recordKeyword}
-              onChange={(event) => setRecordKeyword(event.target.value)}
-            />
-            <input type="date" value={recordDateFrom} onChange={(event) => setRecordDateFrom(event.target.value)} />
-            <input type="date" value={recordDateTo} onChange={(event) => setRecordDateTo(event.target.value)} />
+          <div className="section-hero-stats">
+            <div className="hero-metric">
+              <span>{t('records.hero.inView')}</span>
+              <strong>{displayedRecords.length}</strong>
+              <small>{t('records.hero.filteredRecords')}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('records.hero.pending')}</span>
+              <strong>{pendingCount}</strong>
+              <small>{t('records.hero.needSync')}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('records.hero.tags')}</span>
+              <strong>{selectedTagCount}</strong>
+              <small>{t('records.hero.commaTags')}</small>
+            </div>
           </div>
-
-          <div className="meta-row">
-            <span>
-              {searchMeta
-                ? `Result ${displayedRecords.length}/${searchMeta.total} · ${searchMeta.indexed ? 'FTS' : 'memory'} · ${searchMeta.tookMs}ms`
-                : `Total ${displayedRecords.length}`}
-            </span>
-          </div>
-
-          <div className="record-list">
-            {visibleRecords.map((item) => {
-              const selected = item.jsonPath === selectedRecordPath
-              return (
-                <button
-                  type="button"
-                  key={item.jsonPath ?? `${item.createdAt}-${item.title}`}
-                  className={selected ? 'record-item selected' : 'record-item'}
-                  onClick={() => {
-                    setSelectedRecordPath(item.jsonPath ?? null)
-                    setRecordForm(formFromRecord(item))
-                  }}
-                >
-                  <p>{item.createdAt.slice(0, 19)}</p>
-                  <p>
-                    <strong>{item.recordType}</strong> | {item.title}
-                  </p>
-                </button>
-              )
-            })}
-            {displayedRecords.length === 0 && <p className="muted">No records.</p>}
-          </div>
-
-          {visibleCount < displayedRecords.length && (
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={() => setVisibleCount((prev) => prev + 200)}
-            >
-              Load more ({displayedRecords.length - visibleCount} remaining)
-            </button>
-          )}
         </div>
 
-        <div className="panel right-panel">
-          <div className="form-grid">
-            <label>
-              Type
-              <select
-                value={recordForm.recordType}
-                onChange={(event) =>
-                  setRecordForm((prev) => ({ ...prev, recordType: event.target.value as RecordType }))
-                }
+        <div className="panel panel-strong records-constellation-panel">
+          <div className="panel-head-inline">
+            <h3>{t('records.constellation.title')}</h3>
+            <span className="muted">{t('records.constellation.subtitle')}</span>
+          </div>
+          <p className="constellation-hint">{t('records.constellation.hint')}</p>
+          <div className="records-constellation">
+            <div className="constellation-ring ring-a" />
+            <div className="constellation-ring ring-b" />
+            <button
+              type="button"
+              className="const-node core-node"
+              onClick={() => {
+                setRecordKeyword('')
+                setRecordFilterType('all')
+              }}
+            >
+              {t('records.constellation.core')}
+            </button>
+            {typeNodes.map((node) => (
+              <button
+                type="button"
+                key={node.type}
+                className="const-node type-node"
+                style={{
+                  left: `${node.x}%`,
+                  top: `${node.y}%`,
+                  borderColor: TYPE_COLORS[node.type],
+                  boxShadow: `0 0 16px ${TYPE_COLORS[node.type]}55`,
+                }}
+                onClick={() => setRecordFilterType(node.type)}
               >
+                <span>{node.type}</span>
+                <strong>{node.count}</strong>
+              </button>
+            ))}
+            {tagNodes.map((node) => (
+              <button
+                type="button"
+                key={node.tag}
+                className="const-node tag-node"
+                style={{
+                  left: `${node.x}%`,
+                  top: `${node.y}%`,
+                  borderColor: `${TYPE_COLORS[node.anchorType]}99`,
+                }}
+                onClick={() => setRecordKeyword(node.tag)}
+              >
+                <span>{node.tag}</span>
+                <strong>{node.count}</strong>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="records-layout">
+          <div className="panel left-panel records-left-panel">
+            <div className="panel-head-inline">
+              <h3>{t('records.panel.listTitle')}</h3>
+              <span className="muted">{t('records.panel.listSub')}</span>
+            </div>
+            <div className="toolbar-row">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRecordPath(null)
+                  setRecordForm(emptyForm())
+                }}
+              >
+                {t('common.new')}
+              </button>
+              <button type="button" onClick={() => void handleSaveRecord()} disabled={busy}>
+                {t('common.save')}
+              </button>
+              <button type="button" onClick={() => void handleDeleteRecord()} disabled={busy || !selectedRecordPath}>
+                {t('common.delete')}
+              </button>
+            </div>
+
+            <div className="records-filter-grid">
+              <select
+                value={recordFilterType}
+                onChange={(event) => setRecordFilterType(event.target.value as 'all' | RecordType)}
+              >
+                <option value="all">{t('records.filter.all')}</option>
                 {RECORD_TYPES.map((item) => (
                   <option key={item} value={item}>
                     {item}
                   </option>
                 ))}
               </select>
-            </label>
-
-            <label>
-              Title
               <input
-                value={recordForm.title}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, title: event.target.value }))}
+                placeholder={t('records.filter.keyword')}
+                value={recordKeyword}
+                onChange={(event) => setRecordKeyword(event.target.value)}
               />
-            </label>
+              <input type="date" value={recordDateFrom} onChange={(event) => setRecordDateFrom(event.target.value)} />
+              <input type="date" value={recordDateTo} onChange={(event) => setRecordDateTo(event.target.value)} />
+            </div>
 
-            <label>
-              Created At (ISO)
-              <input
-                value={recordForm.createdAt}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, createdAt: event.target.value }))}
-              />
-            </label>
+            <div className="meta-row">
+              <span>
+                {searchMeta
+                  ? t('records.meta.result', {
+                      shown: displayedRecords.length,
+                      total: searchMeta.total,
+                      mode: searchMeta.indexed ? t('records.meta.mode.fts') : t('records.meta.mode.memory'),
+                      took: searchMeta.tookMs,
+                    })
+                  : t('records.meta.total', { count: displayedRecords.length })}
+              </span>
+            </div>
 
-            <label>
-              Date
-              <input
-                type="date"
-                value={recordForm.date}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, date: event.target.value }))}
-              />
-            </label>
+            <div className="record-list">
+              {visibleRecords.map((item) => {
+                const selected = item.jsonPath === selectedRecordPath
+                return (
+                  <button
+                    type="button"
+                    key={item.jsonPath ?? `${item.createdAt}-${item.title}`}
+                    className={selected ? 'record-item selected' : 'record-item'}
+                    onClick={() => {
+                      setSelectedRecordPath(item.jsonPath ?? null)
+                      setRecordForm(formFromRecord(item))
+                    }}
+                  >
+                    <p>{item.createdAt.slice(0, 19)}</p>
+                    <p>
+                      <strong>{item.recordType}</strong> | {item.title}
+                    </p>
+                  </button>
+                )
+              })}
+              {displayedRecords.length === 0 && <p className="muted">{t('common.noRecords')}</p>}
+            </div>
 
-            <label>
-              Tags (comma)
-              <input
-                value={recordForm.tagsText}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, tagsText: event.target.value }))}
-              />
-            </label>
-
-            <label>
-              Sync Status
-              <select
-                value={recordForm.notionSyncStatus}
-                onChange={(event) =>
-                  setRecordForm((prev) => ({ ...prev, notionSyncStatus: event.target.value }))
-                }
+            {visibleCount < displayedRecords.length && (
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => setVisibleCount((prev) => prev + 200)}
               >
-                <option value="SUCCESS">SUCCESS</option>
-                <option value="PENDING">PENDING</option>
-                <option value="FAILED">FAILED</option>
-              </select>
-            </label>
+                {t('records.loadMore', { remain: displayedRecords.length - visibleCount })}
+              </button>
+            )}
+          </div>
 
-            <label>
-              Notion URL
-              <input
-                value={recordForm.notionUrl}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, notionUrl: event.target.value }))}
+          <div className="panel right-panel records-editor-panel">
+            <div className="panel-head-inline">
+              <h3>{t('records.panel.editorTitle')}</h3>
+              <span className="muted">{t('records.panel.editorSub')}</span>
+            </div>
+            <div className="form-grid">
+              <label>
+                {t('records.field.type')}
+                <select
+                  value={recordForm.recordType}
+                  onChange={(event) =>
+                    setRecordForm((prev) => ({ ...prev, recordType: event.target.value as RecordType }))
+                  }
+                >
+                  {RECORD_TYPES.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                {t('records.field.title')}
+                <input
+                  value={recordForm.title}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, title: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.createdAt')}
+                <input
+                  value={recordForm.createdAt}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, createdAt: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.date')}
+                <input
+                  type="date"
+                  value={recordForm.date}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, date: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.tags')}
+                <input
+                  value={recordForm.tagsText}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, tagsText: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.syncStatus')}
+                <select
+                  value={recordForm.notionSyncStatus}
+                  onChange={(event) =>
+                    setRecordForm((prev) => ({ ...prev, notionSyncStatus: event.target.value }))
+                  }
+                >
+                  <option value="SUCCESS">{t('status.success')}</option>
+                  <option value="PENDING">{t('status.pending')}</option>
+                  <option value="FAILED">{t('status.failed')}</option>
+                </select>
+              </label>
+
+              <label>
+                {t('records.field.notionUrl')}
+                <input
+                  value={recordForm.notionUrl}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, notionUrl: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.notionPageId')}
+                <input
+                  value={recordForm.notionPageId}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, notionPageId: event.target.value }))}
+                />
+              </label>
+
+              <label>
+                {t('records.field.notionError')}
+                <input
+                  value={recordForm.notionError}
+                  onChange={(event) => setRecordForm((prev) => ({ ...prev, notionError: event.target.value }))}
+                />
+              </label>
+            </div>
+
+            <label className="block-field">
+              {t('records.field.finalBody')}
+              <textarea
+                value={recordForm.finalBody}
+                rows={12}
+                onChange={(event) => setRecordForm((prev) => ({ ...prev, finalBody: event.target.value }))}
               />
             </label>
 
-            <label>
-              Notion Page ID
-              <input
-                value={recordForm.notionPageId}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, notionPageId: event.target.value }))}
-              />
-            </label>
-
-            <label>
-              Notion Error
-              <input
-                value={recordForm.notionError}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, notionError: event.target.value }))}
+            <label className="block-field">
+              {t('records.field.sourceText')}
+              <textarea
+                value={recordForm.sourceText}
+                rows={8}
+                onChange={(event) => setRecordForm((prev) => ({ ...prev, sourceText: event.target.value }))}
               />
             </label>
           </div>
-
-          <label className="block-field">
-            Final Body
-            <textarea
-              value={recordForm.finalBody}
-              rows={12}
-              onChange={(event) => setRecordForm((prev) => ({ ...prev, finalBody: event.target.value }))}
-            />
-          </label>
-
-          <label className="block-field">
-            Source Text
-            <textarea
-              value={recordForm.sourceText}
-              rows={8}
-              onChange={(event) => setRecordForm((prev) => ({ ...prev, sourceText: event.target.value }))}
-            />
-          </label>
         </div>
       </div>
     )
   }
 
   function renderLogs() {
+    const failedCount = logs.filter((item) => (item.status || '').toLowerCase().includes('fail')).length
+    const successCount = logs.filter((item) => {
+      const status = (item.status || '').toLowerCase()
+      return status.includes('success') || status.includes('done')
+    }).length
+    const pulse = buildLogPulse(logs)
+    const pulseMax = Math.max(1, ...pulse.map((item) => item.count))
+
     return (
-      <div className="logs-layout">
-        <div className="panel left-panel">
-          <div className="record-list">
-            {logs.map((item, index) => (
-              <button
-                type="button"
-                key={item.jsonPath ?? `${item.timestamp}-${item.eventId}-${index}`}
-                className={selectedLogIndex === index ? 'record-item selected' : 'record-item'}
-                onClick={() => setSelectedLogIndex(index)}
-              >
-                <p>{item.timestamp.slice(0, 19)}</p>
-                <p>
-                  <strong>{item.taskIntent || '-'}</strong> | {item.status || '-'}
-                </p>
-                <p>{item.title || '(no title)'}</p>
-              </button>
-            ))}
-            {logs.length === 0 && <p className="muted">No log entries.</p>}
+      <div className="page-stack">
+        <div className="panel section-hero logs-hero">
+          <div className="section-hero-content">
+            <p className="eyebrow">{t('logs.hero.eyebrow')}</p>
+            <h3>{t('logs.hero.title')}</h3>
+            <p className="muted">{t('logs.hero.desc')}</p>
+          </div>
+          <div className="section-hero-stats">
+            <div className="hero-metric">
+              <span>{t('logs.hero.total')}</span>
+              <strong>{logs.length}</strong>
+              <small>{t('logs.hero.eventsCaptured')}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('logs.hero.failures')}</span>
+              <strong>{failedCount}</strong>
+              <small>{t('logs.hero.needsAttention')}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('logs.hero.success')}</span>
+              <strong>{successCount}</strong>
+              <small>{t('logs.hero.healthyExecutions')}</small>
+            </div>
           </div>
         </div>
 
-        <div className="panel right-panel">
-          <h3>Log Detail</h3>
-          <pre className="json-preview">{selectedLog ? JSON.stringify(selectedLog.raw, null, 2) : '{}'}</pre>
+        <div className="panel panel-strong logs-pulse-panel">
+          <div className="panel-head-inline">
+            <h3>{t('logs.pulse.title')}</h3>
+            <span className="muted">{t('logs.pulse.subtitle')}</span>
+          </div>
+          {pulse.length === 0 ? (
+            <p className="muted">{t('logs.pulse.empty')}</p>
+          ) : (
+            <div className="logs-pulse-grid">
+              {pulse.map((item) => {
+                const totalHeight = Math.max(8, Math.round((item.count / pulseMax) * 100))
+                const failHeight = item.count === 0 ? 0 : Math.round((item.failed / item.count) * totalHeight)
+                return (
+                  <div key={item.date} className="pulse-col">
+                    <div className="pulse-bar-wrap">
+                      <div className="pulse-bar-total" style={{ height: `${totalHeight}%` }}>
+                        {failHeight > 0 && <div className="pulse-bar-failed" style={{ height: `${failHeight}%` }} />}
+                      </div>
+                    </div>
+                    <div className="pulse-meta">
+                      <strong>{item.count}</strong>
+                      <span>{item.date.slice(5)}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="logs-layout">
+          <div className="panel left-panel logs-stream-panel">
+            <div className="panel-head-inline">
+              <h3>{t('logs.stream.title')}</h3>
+              <span className="muted">{t('logs.stream.subtitle')}</span>
+            </div>
+            <div className="record-list">
+              {logs.map((item, index) => {
+                const tone = statusTone(item.status || '')
+                const toneLabel =
+                  tone === 'error' ? t('logs.badge.error') : tone === 'warn' ? t('logs.badge.warn') : t('logs.badge.ok')
+                return (
+                  <button
+                    type="button"
+                    key={item.jsonPath ?? `${item.timestamp}-${item.eventId}-${index}`}
+                    className={
+                      selectedLogIndex === index
+                        ? `record-item selected log-item selected tone-${tone}`
+                        : `record-item log-item tone-${tone}`
+                    }
+                    onClick={() => setSelectedLogIndex(index)}
+                  >
+                    <p>{item.timestamp.slice(0, 19)}</p>
+                    <p>
+                      <strong>{item.taskIntent || '-'}</strong> | {item.status || '-'}
+                    </p>
+                    <p>{item.title || t('logs.detail.noTitle')}</p>
+                    <span className={`log-tone-pill ${tone}`}>{toneLabel}</span>
+                  </button>
+                )
+              })}
+              {logs.length === 0 && <p className="muted">{t('common.noLogs')}</p>}
+            </div>
+          </div>
+
+          <div className="panel right-panel log-detail-panel">
+            <div className="panel-head-inline">
+              <h3>{t('logs.detail.title')}</h3>
+              <span className="muted">{selectedLog?.eventId || t('common.selectLog')}</span>
+            </div>
+            <ul className="simple-list log-meta-list">
+              <li>
+                <span>{t('logs.detail.eventId')}</span>
+                <strong>{selectedLog?.eventId || '-'}</strong>
+              </li>
+              <li>
+                <span>{t('logs.detail.task')}</span>
+                <strong>{selectedLog?.taskIntent || '-'}</strong>
+              </li>
+              <li>
+                <span>{t('logs.detail.status')}</span>
+                <strong>{selectedLog?.status || '-'}</strong>
+              </li>
+              <li>
+                <span>{t('logs.detail.timestamp')}</span>
+                <strong>{selectedLog?.timestamp || '-'}</strong>
+              </li>
+              <li>
+                <span>{t('logs.detail.titleLabel')}</span>
+                <strong>{selectedLog?.title || t('logs.detail.noTitle')}</strong>
+              </li>
+            </ul>
+            <h4 className="sub-title">{t('logs.detail.payload')}</h4>
+            <pre className="json-preview">{selectedLog ? JSON.stringify(selectedLog.raw, null, 2) : '{}'}</pre>
+          </div>
         </div>
       </div>
     )
   }
 
   function renderAi() {
+    const aiWordCount = aiResult.trim() ? aiResult.trim().split(/\s+/).filter(Boolean).length : 0
+    const insights = extractAiInsights(aiResult)
+    const cards: Array<{ id: 'summary' | 'risks' | 'actions'; title: string; items: string[]; empty: string }> = [
+      {
+        id: 'summary',
+        title: t('ai.insight.summary'),
+        items: insights.summary,
+        empty: t('ai.insight.empty.summary'),
+      },
+      {
+        id: 'risks',
+        title: t('ai.insight.risks'),
+        items: insights.risks,
+        empty: t('ai.insight.empty.risks'),
+      },
+      {
+        id: 'actions',
+        title: t('ai.insight.actions'),
+        items: insights.actions,
+        empty: t('ai.insight.empty.actions'),
+      },
+    ]
+
     return (
-      <div className="panel settings-panel">
-        <h3>AI Analysis</h3>
-
-        <div className="ai-controls-grid">
-          <label>
-            Provider
-            <select value={aiProvider} onChange={(event) => setAiProvider(event.target.value as AiProvider)}>
-              <option value="local">local</option>
-              <option value="openai">openai</option>
-            </select>
-          </label>
-
-          <label>
-            Model
-            <input value={aiModel} onChange={(event) => setAiModel(event.target.value)} />
-          </label>
-
-          <label>
-            Max Records
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={aiMaxRecords}
-              onChange={(event) => setAiMaxRecords(Number(event.target.value) || 30)}
-            />
-          </label>
-
-          <label className="checkbox-field">
-            <input
-              type="checkbox"
-              checked={aiIncludeLogs}
-              onChange={(event) => setAiIncludeLogs(event.target.checked)}
-            />
-            include logs
-          </label>
+      <div className="page-stack">
+        <div className="panel section-hero ai-hero">
+          <div className="section-hero-content">
+            <p className="eyebrow">{t('ai.hero.eyebrow')}</p>
+            <h3>{t('ai.hero.title')}</h3>
+            <p className="muted">{t('ai.hero.desc')}</p>
+          </div>
+          <div className="section-hero-stats">
+            <div className="hero-metric">
+              <span>{t('common.provider')}</span>
+              <strong>{aiProvider}</strong>
+              <small>{aiModel}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('ai.hero.recordsWindow')}</span>
+              <strong>{aiMaxRecords}</strong>
+              <small>{aiIncludeLogs ? t('ai.hero.logsIncluded') : t('ai.hero.recordsOnly')}</small>
+            </div>
+            <div className="hero-metric">
+              <span>{t('ai.hero.outputSize')}</span>
+              <strong>{aiWordCount}</strong>
+              <small>{t('ai.hero.words')}</small>
+            </div>
+          </div>
         </div>
 
-        <label className="block-field">
-          Prompt
-          <textarea value={aiPrompt} rows={6} onChange={(event) => setAiPrompt(event.target.value)} />
-        </label>
+        <div className="ai-layout">
+          <div className="panel ai-config-panel">
+            <div className="panel-head-inline">
+              <h3>{t('ai.setup.title')}</h3>
+              <span className="muted">{t('ai.setup.subtitle')}</span>
+            </div>
 
-        <div className="toolbar-row two-col">
-          <button type="button" onClick={() => void handleRunAi()} disabled={busy}>
-            Run Analysis
-          </button>
-          <button type="button" className="ghost-btn" onClick={() => navigator.clipboard.writeText(aiResult || '')}>
-            Copy Result
-          </button>
+            <div className="ai-controls-grid">
+              <label>
+                {t('ai.field.provider')}
+                <select value={aiProvider} onChange={(event) => setAiProvider(event.target.value as AiProvider)}>
+                  <option value="local">local</option>
+                  <option value="openai">openai</option>
+                </select>
+              </label>
+
+              <label>
+                {t('ai.field.model')}
+                <input value={aiModel} onChange={(event) => setAiModel(event.target.value)} />
+              </label>
+
+              <label>
+                {t('ai.field.maxRecords')}
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={aiMaxRecords}
+                  onChange={(event) => setAiMaxRecords(Number(event.target.value) || 30)}
+                />
+              </label>
+
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={aiIncludeLogs}
+                  onChange={(event) => setAiIncludeLogs(event.target.checked)}
+                />
+                {t('ai.field.includeLogs')}
+              </label>
+            </div>
+
+            <label className="block-field">
+              {t('ai.field.prompt')}
+              <textarea value={aiPrompt} rows={8} onChange={(event) => setAiPrompt(event.target.value)} />
+            </label>
+
+            <div className="toolbar-row two-col">
+              <button type="button" onClick={() => void handleRunAi()} disabled={busy}>
+                {t('ai.button.run')}
+              </button>
+              <button type="button" className="ghost-btn" onClick={() => navigator.clipboard.writeText(aiResult || '')}>
+                {t('ai.button.copy')}
+              </button>
+            </div>
+          </div>
+
+          <div className="ai-right-stack">
+            <div className="panel panel-strong ai-insights-panel">
+              <div className="panel-head-inline">
+                <h3>{t('ai.insight.title')}</h3>
+                <span className="muted">{t('ai.insight.subtitle')}</span>
+              </div>
+              <div className="ai-insights-grid">
+                {cards.map((card) => (
+                  <div key={card.id} className={`ai-insight-card ${card.id}`}>
+                    <h4>{card.title}</h4>
+                    {card.items.length > 0 ? (
+                      <ul className="insight-list">
+                        {card.items.map((line, index) => (
+                          <li key={`${card.id}-${index}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted">{card.empty}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel ai-output-panel">
+              <div className="panel-head-inline">
+                <h3>{t('ai.output.title')}</h3>
+                <span className="muted">{t('ai.output.subtitle', { count: aiWordCount })}</span>
+              </div>
+              <label className="block-field">
+                <textarea value={aiResult} rows={22} onChange={(event) => setAiResult(event.target.value)} />
+              </label>
+            </div>
+          </div>
         </div>
-
-        <label className="block-field">
-          Output
-          <textarea value={aiResult} rows={16} onChange={(event) => setAiResult(event.target.value)} />
-        </label>
       </div>
     )
   }
@@ -1336,10 +2544,10 @@ function App() {
     return (
       <div className="settings-layout">
         <div className="panel left-panel">
-          <h3>Notion Connector</h3>
+          <h3>{t('Notion Connector', 'Notion 連接器')}</h3>
           <div className="form-grid two-col-grid">
             <label className="span-2">
-              Notion Database ID
+              {t('Notion Database ID', 'Notion 資料庫 ID')}
               <input
                 value={appSettings.integrations.notion.databaseId}
                 onChange={(event) =>
@@ -1375,83 +2583,83 @@ function App() {
                   }))
                 }
               />
-              Enable Notion sync
+              {t('Enable Notion sync', '啟用 Notion 同步')}
             </label>
 
             <label>
-              Key Status
-              <input value={hasNotionKey ? 'configured' : 'not set'} readOnly />
+              {t('Key Status', '金鑰狀態')}
+              <input value={hasNotionKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
             </label>
           </div>
 
           <div className="form-grid">
             <label>
-              Notion API Key (saved to Keychain)
+              {t('Notion API Key (saved to Keychain)', 'Notion API 金鑰（儲存在 Keychain）')}
               <input
                 type="password"
                 value={notionKeyDraft}
                 onChange={(event) => setNotionKeyDraft(event.target.value)}
-                placeholder={hasNotionKey ? 'Key already configured' : 'secret_...'}
+                placeholder={hasNotionKey ? t('Key already configured', '金鑰已設定') : 'secret_...'}
               />
             </label>
           </div>
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleSaveNotionKey()}>
-              Save Key
+              {t('Save Key', '儲存金鑰')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleClearNotionKey()}>
-              Clear Key
+              {t('Clear Key', '清除金鑰')}
             </button>
           </div>
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleSaveSettings(appSettings)} disabled={busy}>
-              Save Connector Settings
+              {t('Save Connector Settings', '儲存連接器設定')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handlePullFromNotion()} disabled={busy}>
-              Pull From Notion
+              {t('Pull From Notion', '從 Notion 拉取')}
             </button>
           </div>
 
           <div className="form-grid">
             <label>
-              Conflict Strategy
+              {t('Conflict Strategy', '衝突策略')}
               <select
                 value={notionConflictStrategy}
                 onChange={(event) => setNotionConflictStrategy(event.target.value as NotionConflictStrategy)}
               >
-                <option value="manual">manual (mark conflict)</option>
-                <option value="local_wins">local_wins (push local)</option>
-                <option value="notion_wins">notion_wins (pull notion)</option>
+                <option value="manual">{t('manual (mark conflict)', 'manual（標記衝突）')}</option>
+                <option value="local_wins">{t('local_wins (push local)', 'local_wins（本地覆蓋）')}</option>
+                <option value="notion_wins">{t('notion_wins (pull notion)', 'notion_wins（Notion 覆蓋）')}</option>
               </select>
             </label>
           </div>
 
           <div className="toolbar-row two-col">
             <button type="button" className="ghost-btn" onClick={() => void handleSyncSelectedToNotion()} disabled={busy}>
-              Bidirectional Sync Selected
+              {t('Bidirectional Sync Selected', '雙向同步選取項')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleSyncVisibleToNotion()} disabled={busy}>
-              Bidirectional Sync View ({displayedRecords.length})
+              {t(`Bidirectional Sync View (${displayedRecords.length})`, `雙向同步目前視圖（${displayedRecords.length}）`)}
             </button>
           </div>
 
           {notionSyncReport && (
             <>
               <hr className="separator" />
-              <h3>Notion Sync Report</h3>
+              <h3>{t('Notion Sync Report', 'Notion 同步報告')}</h3>
               <pre className="json-preview">{notionSyncReport}</pre>
             </>
           )}
         </div>
 
         <div className="panel right-panel">
-          <h3>NotebookLM Connector</h3>
+          <h3>{t('NotebookLM Connector', 'NotebookLM 連接器')}</h3>
 
           <div className="form-grid two-col-grid">
             <label>
-              MCP Command
+              {t('MCP Command', 'MCP 指令')}
               <input
                 value={appSettings.integrations.notebooklm.command}
                 onChange={(event) =>
@@ -1469,7 +2677,7 @@ function App() {
               />
             </label>
             <label>
-              MCP Args (space separated)
+              {t('MCP Args (space separated)', 'MCP 參數（以空白分隔）')}
               <input
                 value={appSettings.integrations.notebooklm.args.join(' ')}
                 onChange={(event) =>
@@ -1493,26 +2701,26 @@ function App() {
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleNotebookHealth()} disabled={busy}>
-              Health Check
+              {t('Health Check', '健康檢查')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleNotebookList()} disabled={busy}>
-              Refresh Notebooks
+              {t('Refresh Notebooks', '刷新筆記本')}
             </button>
           </div>
 
           <div className="form-grid two-col-grid">
             <label>
-              New Notebook Title
+              {t('New Notebook Title', '新筆記本標題')}
               <input
                 value={newNotebookTitle}
                 onChange={(event) => setNewNotebookTitle(event.target.value)}
-                placeholder="KOF Note - Weekly Analysis"
+                placeholder={t('KOF Note - Weekly Analysis', 'KOF Note - 每週分析')}
               />
             </label>
             <label>
-              Selected Notebook
+              {t('Selected Notebook', '已選筆記本')}
               <select value={selectedNotebookId} onChange={(event) => setSelectedNotebookId(event.target.value)}>
-                <option value="">(choose one)</option>
+                <option value="">{t('(choose one)', '（選擇一個）')}</option>
                 {notebookList.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -1524,24 +2732,24 @@ function App() {
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleNotebookCreate()} disabled={busy}>
-              Create Notebook
+              {t('Create Notebook', '建立筆記本')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleNotebookSetDefault()} disabled={busy}>
-              Set Default Notebook
+              {t('Set Default Notebook', '設為預設筆記本')}
             </button>
           </div>
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleAddSelectedRecordToNotebook()} disabled={busy}>
-              Add Selected Record Source
+              {t('Add Selected Record Source', '加入選取紀錄來源')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleSaveSettings(appSettings)} disabled={busy}>
-              Save MCP Config
+              {t('Save MCP Config', '儲存 MCP 設定')}
             </button>
           </div>
 
           <label className="block-field">
-            Ask NotebookLM
+            {t('Ask NotebookLM', '詢問 NotebookLM')}
             <textarea
               rows={5}
               value={notebookQuestion}
@@ -1551,25 +2759,25 @@ function App() {
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleNotebookAsk()} disabled={busy}>
-              Ask
+              {t('Ask', '詢問')}
             </button>
             <button
               type="button"
               className="ghost-btn"
               onClick={() => navigator.clipboard.writeText(notebookAnswer || '')}
             >
-              Copy Answer
+              {t('Copy Answer', '複製回答')}
             </button>
           </div>
 
           <label className="block-field">
-            NotebookLM Answer
+            {t('NotebookLM Answer', 'NotebookLM 回答')}
             <textarea rows={10} value={notebookAnswer} onChange={(event) => setNotebookAnswer(event.target.value)} />
           </label>
 
           {notebookCitations.length > 0 && (
             <div className="panel">
-              <h3>Citations</h3>
+              <h3>{t('Citations', '引用')}</h3>
               <ul className="simple-list">
                 {notebookCitations.map((item, idx) => (
                   <li key={`${item}-${idx}`}>
@@ -1583,7 +2791,7 @@ function App() {
           {notebookHealthText && (
             <>
               <hr className="separator" />
-              <h3>Health Output</h3>
+              <h3>{t('Health Output', '健康輸出')}</h3>
               <pre className="json-preview">{notebookHealthText}</pre>
             </>
           )}
@@ -1596,7 +2804,7 @@ function App() {
     return (
       <div className="settings-layout">
         <div className="panel left-panel">
-          <h3>Profiles</h3>
+          <h3>{t('Profiles', '設定檔')}</h3>
           <div className="record-list">
             {appSettings.profiles.map((profile) => (
               <button
@@ -1614,7 +2822,7 @@ function App() {
                 <p>{profile.centralHome || '-'}</p>
               </button>
             ))}
-            {appSettings.profiles.length === 0 && <p className="muted">No profiles yet.</p>}
+            {appSettings.profiles.length === 0 && <p className="muted">{t('No profiles yet.', '尚無設定檔。')}</p>}
           </div>
 
           <div className="toolbar-row two-col">
@@ -1622,12 +2830,12 @@ function App() {
               type="button"
               className="ghost-btn"
               onClick={() => {
-                const next = makeProfile(`Profile ${appSettings.profiles.length + 1}`)
+                const next = makeProfile(t(`Profile ${appSettings.profiles.length + 1}`, `設定檔 ${appSettings.profiles.length + 1}`))
                 setProfileDraft(next)
                 setSelectedProfileId(next.id)
               }}
             >
-              New Profile
+              {t('New Profile', '新增設定檔')}
             </button>
             <button
               type="button"
@@ -1641,21 +2849,49 @@ function App() {
                 }
               }}
             >
-              Apply Profile
+              {t('Apply Profile', '套用設定檔')}
             </button>
           </div>
         </div>
 
         <div className="panel right-panel">
-          <h3>Profile Editor</h3>
+          <h3>{t('General Preferences', '一般偏好')}</h3>
+          <div className="form-grid two-col-grid">
+            <label>
+              {t('UI Language', '介面語言')}
+              <select
+                value={language}
+                onChange={(event) => {
+                  const next = event.target.value
+                  if (isSupportedLanguage(next)) {
+                    setLanguage(next)
+                  }
+                }}
+              >
+                {SUPPORTED_LANGUAGES.map((code) => (
+                  <option key={code} value={code}>
+                    {languageName(code)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t('Current Language', '目前語言')}
+              <input value={languageName(language)} readOnly />
+            </label>
+          </div>
+
+          <hr className="separator" />
+
+          <h3>{t('Profile Editor', '設定檔編輯')}</h3>
 
           <div className="form-grid two-col-grid">
             <label>
-              ID
+              {t('ID', 'ID')}
               <input value={profileDraft.id} readOnly />
             </label>
             <label>
-              Name
+              {t('Name', '名稱')}
               <input
                 value={profileDraft.name}
                 onChange={(event) =>
@@ -1667,7 +2903,7 @@ function App() {
               />
             </label>
             <label>
-              Central Home
+              {t('Central Home', '中央路徑')}
               <input
                 value={profileDraft.centralHome}
                 onChange={(event) =>
@@ -1679,7 +2915,7 @@ function App() {
               />
             </label>
             <label>
-              Default Provider
+              {t('Default Provider', '預設供應者')}
               <select
                 value={profileDraft.defaultProvider}
                 onChange={(event) =>
@@ -1694,7 +2930,7 @@ function App() {
               </select>
             </label>
             <label>
-              Default Model
+              {t('Default Model', '預設模型')}
               <input
                 value={profileDraft.defaultModel}
                 onChange={(event) =>
@@ -1706,7 +2942,7 @@ function App() {
               />
             </label>
             <label>
-              Poll Interval (sec)
+              {t('Poll Interval (sec)', '輪詢間隔（秒）')}
               <input
                 type="number"
                 min={3}
@@ -1743,7 +2979,7 @@ function App() {
                 void handleSaveSettings(nextSettings)
               }}
             >
-              Save Profile
+              {t('Save Profile', '儲存設定檔')}
             </button>
             <button
               type="button"
@@ -1764,34 +3000,34 @@ function App() {
                 void handleSaveSettings(nextSettings)
               }}
             >
-              Delete Profile
+              {t('Delete Profile', '刪除設定檔')}
             </button>
           </div>
 
           <hr className="separator" />
 
-          <h3>OpenAI Keychain</h3>
+          <h3>{t('OpenAI Keychain', 'OpenAI 金鑰管理')}</h3>
           <div className="form-grid two-col-grid">
             <label>
-              API Key (saved to Keychain)
+              {t('API Key (saved to Keychain)', 'API 金鑰（儲存在 Keychain）')}
               <input
                 type="password"
                 value={openaiKeyDraft}
                 onChange={(event) => setOpenaiKeyDraft(event.target.value)}
-                placeholder={hasOpenaiKey ? 'Key already configured' : 'sk-...'}
+                placeholder={hasOpenaiKey ? t('Key already configured', '金鑰已設定') : 'sk-...'}
               />
             </label>
             <label>
-              Key Status
-              <input value={hasOpenaiKey ? 'configured' : 'not set'} readOnly />
+              {t('Key Status', '金鑰狀態')}
+              <input value={hasOpenaiKey ? t('configured', '已設定') : t('not set', '未設定')} readOnly />
             </label>
           </div>
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleSaveApiKey()}>
-              Save Key
+              {t('Save Key', '儲存金鑰')}
             </button>
             <button type="button" className="ghost-btn" onClick={() => void handleClearApiKey()}>
-              Clear Key
+              {t('Clear Key', '清除金鑰')}
             </button>
           </div>
         </div>
@@ -1803,37 +3039,39 @@ function App() {
     return (
       <div className="settings-layout">
         <div className="panel left-panel">
-          <h3>Health Snapshot</h3>
+          <h3>{t('Health Snapshot', '健康狀態')}</h3>
           <ul className="simple-list">
             <li>
-              <span>Central Home</span>
+              <span>{t('Central Home', '中央路徑')}</span>
               <strong className="align-right">{health?.centralHome || '-'}</strong>
             </li>
             <li>
-              <span>Records / Logs</span>
+              <span>{t('Records / Logs', '紀錄 / 日誌')}</span>
               <strong>
                 {health?.recordsCount ?? 0} / {health?.logsCount ?? 0}
               </strong>
             </li>
             <li>
-              <span>Index</span>
+              <span>{t('Index', '索引')}</span>
               <strong>
-                {health?.indexExists ? `ready (${health.indexedRecords})` : 'not built'}
+                {health?.indexExists
+                  ? t(`ready (${health.indexedRecords})`, `就緒（${health.indexedRecords}）`)
+                  : t('not built', '未建立')}
               </strong>
             </li>
             <li>
-              <span>OpenAI key</span>
-              <strong>{health?.hasOpenaiApiKey ? 'configured' : 'not set'}</strong>
+              <span>{t('OpenAI key', 'OpenAI 金鑰')}</span>
+              <strong>{health?.hasOpenaiApiKey ? t('configured', '已設定') : t('not set', '未設定')}</strong>
             </li>
             <li>
-              <span>Profiles</span>
+              <span>{t('Profiles', '設定檔')}</span>
               <strong>{health?.profileCount ?? 0}</strong>
             </li>
           </ul>
 
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleRebuildIndex()} disabled={!centralHome || busy}>
-              Rebuild Index
+              {t('Rebuild Index', '重建索引')}
             </button>
             <button
               type="button"
@@ -1844,25 +3082,25 @@ function App() {
                 }
                 void withBusy(async () => {
                   setHealth(await getHealthDiagnostics(centralHome))
-                  pushNotice('success', 'Health diagnostics refreshed.')
+                  pushNotice('success', t('Health diagnostics refreshed.', '健康診斷已刷新。'))
                 })
               }}
               disabled={!centralHome || busy}
             >
-              Refresh Health
+              {t('Refresh Health', '刷新健康狀態')}
             </button>
           </div>
         </div>
 
         <div className="panel right-panel">
-          <h3>Export Report</h3>
+          <h3>{t('Export Report', '匯出報告')}</h3>
           <div className="form-grid two-col-grid">
             <label>
-              Title
+              {t('Title', '標題')}
               <input value={reportTitle} onChange={(event) => setReportTitle(event.target.value)} />
             </label>
             <label>
-              Recent Days
+              {t('Recent Days', '最近天數')}
               <input
                 type="number"
                 min={1}
@@ -1872,13 +3110,13 @@ function App() {
               />
             </label>
             <label className="span-2">
-              Output Path (optional)
+              {t('Output Path (optional)', '輸出路徑（選填）')}
               <input value={reportPath} onChange={(event) => setReportPath(event.target.value)} />
             </label>
           </div>
           <div className="toolbar-row two-col">
             <button type="button" onClick={() => void handleExportReport()} disabled={!centralHome || busy}>
-              Export Markdown
+              {t('Export Markdown', '匯出 Markdown')}
             </button>
             <button
               type="button"
@@ -1889,13 +3127,13 @@ function App() {
                 setReportDays(7)
               }}
             >
-              Reset
+              {t('Reset', '重置')}
             </button>
           </div>
 
           <hr className="separator" />
 
-          <h3>Home Fingerprint</h3>
+          <h3>{t('Home Fingerprint', '路徑指紋')}</h3>
           <pre className="json-preview">{JSON.stringify(fingerprint ?? {}, null, 2)}</pre>
         </div>
       </div>
@@ -1906,42 +3144,47 @@ function App() {
     <div className="workbench-root">
       <aside className="sidebar">
         <h2>KOF Note</h2>
-        <p className="muted">Desktop Console</p>
+        <p className="muted">{t('Desktop Console', '桌面主控台')}</p>
 
         <div className="tab-list">
           {TAB_ITEMS.map((tab) => (
             <button
-              key={tab.key}
+              key={tab}
               type="button"
-              className={activeTab === tab.key ? 'tab-btn active' : 'tab-btn'}
-              onClick={() => setActiveTab(tab.key)}
+              className={activeTab === tab ? 'tab-btn active' : 'tab-btn'}
+              onClick={() => setActiveTab(tab)}
             >
-              {tab.label}
+              {tabLabel(tab)}
             </button>
           ))}
         </div>
 
         <div className="sidebar-meta">
           <p>
-            <strong>Active Home</strong>
+            <strong>{t('Active Home', '目前路徑')}</strong>
           </p>
-          <code>{centralHome || '-'}</code>
+          <code>{centralHomeDisplay.fullPath || '-'}</code>
         </div>
 
         <button type="button" className="ghost-btn" onClick={() => setCommandOpen(true)}>
-          Command Palette (⌘K)
+          {t('Command Palette (⌘K)', '指令選單 (⌘K)')}
         </button>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <input
-            value={centralHomeInput}
-            onChange={(event) => setCentralHomeInput(event.target.value)}
-            placeholder="Enter central home path"
-          />
-          <button type="button" onClick={() => void loadCentralHome()} disabled={busy}>
-            Load
+          <div
+            className="home-pill"
+            title={centralHomeDisplay.fullPath || t('No central log selected', '尚未選擇中央記錄路徑')}
+          >
+            <span className="home-pill-label">{t('Central Log', '中央記錄')}</span>
+            <strong className="home-pill-name">{centralHomeDisplay.name || t('Not selected', '未選擇')}</strong>
+          </div>
+          <button type="button" className="ghost-btn" onClick={() => void handlePickCentralHome()} disabled={busy}>
+            {t('Choose Folder', '選擇資料夾')}
+          </button>
+          <button type="button" onClick={() => void loadCentralHome()} disabled={busy || !centralHomeInput.trim()}>
+            {t('Load', '載入')}
           </button>
           <button
             type="button"
@@ -1951,13 +3194,13 @@ function App() {
                   const data = await refreshCore(centralHome)
                   setDisplayedRecords(data.records)
                   setSearchMeta(null)
-                  pushNotice('success', 'Data refreshed.')
+                  pushNotice('success', t('Data refreshed.', '資料已刷新。'))
                 })
               }
             }}
             disabled={!centralHome || busy}
           >
-            Refresh
+            {t('Refresh', '刷新')}
           </button>
         </header>
 
@@ -1987,7 +3230,7 @@ function App() {
               ref={commandInputRef}
               value={commandQuery}
               onChange={(event) => setCommandQuery(event.target.value)}
-              placeholder="Type a command..."
+              placeholder={t('Type a command...', '輸入指令...')}
             />
             <div className="palette-list">
               {filteredCommands.map((item) => (
@@ -1995,7 +3238,7 @@ function App() {
                   {item.label}
                 </button>
               ))}
-              {filteredCommands.length === 0 && <p className="muted">No matching command.</p>}
+              {filteredCommands.length === 0 && <p className="muted">{t('No matching command.', '找不到符合的指令。')}</p>}
             </div>
           </div>
         </div>

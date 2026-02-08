@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 1420 --strictPort",
+    "dev:mock": "VITE_KOF_MOCK=1 vite --host 127.0.0.1 --port 4173 --strictPort",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "preview": "vite preview",
     "tauri:dev": "PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" tauri dev",
     "tauri:build": "PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" tauri build",
@@ -14,12 +17,16 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "d3-force": "^3.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.56.1",
     "@tauri-apps/cli": "^2.10.0",
+    "@types/d3-force": "^3.0.10",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

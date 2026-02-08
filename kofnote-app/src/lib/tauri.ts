@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { open } from '@tauri-apps/plugin-dialog'
 import type {
   AiAnalysisResponse,
   AppSettings,
@@ -20,20 +21,565 @@ import type {
   SearchResult,
 } from '../types'
 
+const DEFAULT_MOCK_HOME = '/mock/keeponfirst-local-brain'
+const MOCK_RUNTIME =
+  import.meta.env.VITE_KOF_MOCK === '1' ||
+  (typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in (window as Window & { __TAURI_INTERNALS__?: unknown })))
+
+type MockState = {
+  centralHome: string
+  records: RecordItem[]
+  logs: LogEntry[]
+  settings: AppSettings
+  hasOpenaiKey: boolean
+  hasNotionKey: boolean
+  notebooks: NotebookSummary[]
+}
+
+function nowMinus(hours: number): string {
+  return new Date(Date.now() - hours * 3600_000).toISOString()
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function createMockState(): MockState {
+  const centralHome = DEFAULT_MOCK_HOME
+  const records: RecordItem[] = [
+    {
+      recordType: 'worklog',
+      title: 'NotebookLM integration validation',
+      createdAt: nowMinus(3),
+      sourceText: 'Validated MCP bridge and workflow.',
+      finalBody: 'Confirmed notebook list + ask flow. Added error handling and fallback path.',
+      tags: ['notebooklm', 'mcp', 'integration'],
+      date: nowMinus(3).slice(0, 10),
+      notionSyncStatus: 'SUCCESS',
+      jsonPath: `${centralHome}/records/worklog/notebooklm-validation.json`,
+      mdPath: `${centralHome}/records/worklog/notebooklm-validation.md`,
+    },
+    {
+      recordType: 'idea',
+      title: 'Knowledge graph dashboard mode',
+      createdAt: nowMinus(9),
+      sourceText: 'Need a more cinematic dashboard experience.',
+      finalBody: 'Use pulse timeline + constellation and action cards for better command-center feeling.',
+      tags: ['dashboard', 'graph', 'ux'],
+      date: nowMinus(9).slice(0, 10),
+      notionSyncStatus: 'PENDING',
+      jsonPath: `${centralHome}/records/idea/knowledge-graph-mode.json`,
+      mdPath: `${centralHome}/records/idea/knowledge-graph-mode.md`,
+    },
+    {
+      recordType: 'decision',
+      title: 'Move desktop app to Tauri',
+      createdAt: nowMinus(30),
+      sourceText: 'Need stronger desktop packaging and performance.',
+      finalBody: 'Adopt React + Tauri stack for UX flexibility and native distribution.',
+      tags: ['tauri', 'architecture', 'decision'],
+      date: nowMinus(30).slice(0, 10),
+      notionSyncStatus: 'SUCCESS',
+      jsonPath: `${centralHome}/records/decision/move-to-tauri.json`,
+      mdPath: `${centralHome}/records/decision/move-to-tauri.md`,
+    },
+    {
+      recordType: 'backlog',
+      title: 'E2E coverage for language switching',
+      createdAt: nowMinus(42),
+      sourceText: 'Need tests before adding more languages.',
+      finalBody: 'Playwright smoke for tab rendering and language toggle in settings.',
+      tags: ['playwright', 'i18n', 'qa'],
+      date: nowMinus(42).slice(0, 10),
+      notionSyncStatus: 'FAILED',
+      notionError: 'waiting for test harness',
+      jsonPath: `${centralHome}/records/backlog/e2e-language-switch.json`,
+      mdPath: `${centralHome}/records/backlog/e2e-language-switch.md`,
+    },
+    {
+      recordType: 'note',
+      title: 'MCP servers available in Codex desktop',
+      createdAt: nowMinus(52),
+      sourceText: 'kof-nanobanana-mcp and kof-stitch-mcp are visible in settings.',
+      finalBody: 'Keep design pipeline flexible with optional MCP-generated assets.',
+      tags: ['mcp', 'stitch', 'nanobanana'],
+      date: nowMinus(52).slice(0, 10),
+      notionSyncStatus: 'SUCCESS',
+      jsonPath: `${centralHome}/records/note/mcp-availability.json`,
+      mdPath: `${centralHome}/records/note/mcp-availability.md`,
+    },
+  ]
+
+  const logs: LogEntry[] = [
+    {
+      timestamp: nowMinus(1),
+      eventId: 'evt-1001',
+      taskIntent: 'sync_selected',
+      status: 'success',
+      title: 'Synced selected record to notion',
+      data: { jsonPath: records[0].jsonPath },
+      raw: { result: 'ok' },
+      jsonPath: `${centralHome}/logs/evt-1001.json`,
+    },
+    {
+      timestamp: nowMinus(4),
+      eventId: 'evt-1002',
+      taskIntent: 'run_ai_analysis',
+      status: 'done',
+      title: 'Local analysis completed',
+      data: { provider: 'local' },
+      raw: { summary: 'analysis done' },
+      jsonPath: `${centralHome}/logs/evt-1002.json`,
+    },
+    {
+      timestamp: nowMinus(7),
+      eventId: 'evt-1003',
+      taskIntent: 'sync_batch',
+      status: 'failed',
+      title: 'Batch sync partially failed',
+      data: { failed: 2 },
+      raw: { error: 'mock failure' },
+      jsonPath: `${centralHome}/logs/evt-1003.json`,
+    },
+  ]
+
+  return {
+    centralHome,
+    records,
+    logs,
+    hasOpenaiKey: false,
+    hasNotionKey: false,
+    notebooks: [
+      {
+        id: 'nb-main',
+        name: 'KOF Weekly Notes',
+        sourceCount: 12,
+        updatedAt: nowMinus(2),
+      },
+      {
+        id: 'nb-ideas',
+        name: 'Idea Radar',
+        sourceCount: 7,
+        updatedAt: nowMinus(20),
+      },
+    ],
+    settings: {
+      profiles: [
+        {
+          id: 'profile-main',
+          name: 'Main Workspace',
+          centralHome,
+          defaultProvider: 'local',
+          defaultModel: 'gpt-4.1-mini',
+        },
+      ],
+      activeProfileId: 'profile-main',
+      pollIntervalSec: 8,
+      uiPreferences: {},
+      integrations: {
+        notion: {
+          enabled: true,
+          databaseId: 'mock-notion-db',
+        },
+        notebooklm: {
+          command: 'uvx',
+          args: ['kof-notebooklm-mcp'],
+          defaultNotebookId: 'nb-main',
+        },
+      },
+    },
+  }
+}
+
+const mockState = createMockState()
+
+function summarizeByType(records: RecordItem[]): Record<string, number> {
+  const counts: Record<string, number> = {
+    decision: 0,
+    worklog: 0,
+    idea: 0,
+    backlog: 0,
+    note: 0,
+  }
+  for (const item of records) {
+    counts[item.recordType] = (counts[item.recordType] ?? 0) + 1
+  }
+  return counts
+}
+
+function buildDailyCounts(records: RecordItem[]): Array<{ date: string; count: number }> {
+  const byDate = new Map<string, number>()
+  for (const item of records) {
+    const date = (item.date || item.createdAt.slice(0, 10)).slice(0, 10)
+    byDate.set(date, (byDate.get(date) ?? 0) + 1)
+  }
+  return [...byDate.entries()]
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-7)
+}
+
+function buildTopTags(records: RecordItem[]): Array<{ tag: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const item of records) {
+    for (const tag of item.tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12)
+}
+
+function createDashboardStats(): DashboardStats {
+  const records = mockState.records
+  return {
+    totalRecords: records.length,
+    totalLogs: mockState.logs.length,
+    typeCounts: summarizeByType(records),
+    topTags: buildTopTags(records),
+    recentDailyCounts: buildDailyCounts(records),
+    pendingSyncCount: records.filter((item) => item.notionSyncStatus === 'PENDING').length,
+  }
+}
+
+function createFingerprint(): HomeFingerprint {
+  const latestRecordAt = mockState.records.map((item) => item.createdAt).sort().at(-1) ?? ''
+  const latestLogAt = mockState.logs.map((item) => item.timestamp).sort().at(-1) ?? ''
+
+  return {
+    token: `${mockState.records.length}:${mockState.logs.length}:${latestRecordAt}:${latestLogAt}`,
+    recordsCount: mockState.records.length,
+    logsCount: mockState.logs.length,
+    latestRecordAt,
+    latestLogAt,
+  }
+}
+
+function createHealth(): HealthDiagnostics {
+  const fingerprint = createFingerprint()
+  return {
+    centralHome: mockState.centralHome,
+    recordsCount: mockState.records.length,
+    logsCount: mockState.logs.length,
+    indexPath: `${mockState.centralHome}/.index/search.sqlite`,
+    indexExists: true,
+    indexedRecords: mockState.records.length,
+    latestRecordAt: fingerprint.latestRecordAt,
+    latestLogAt: fingerprint.latestLogAt,
+    hasOpenaiApiKey: mockState.hasOpenaiKey,
+    profileCount: mockState.settings.profiles.length,
+  }
+}
+
+function findRecordByPath(jsonPath: string): RecordItem | undefined {
+  return mockState.records.find((item) => item.jsonPath === jsonPath)
+}
+
+function recordFromPayload(centralHome: string, payload: RecordPayload): RecordItem {
+  const createdAt = payload.createdAt || new Date().toISOString()
+  const slug = slugify(payload.title || `${payload.recordType}-${Date.now()}`) || `record-${Date.now()}`
+  const jsonPath = `${centralHome}/records/${payload.recordType}/${slug}.json`
+  return {
+    recordType: payload.recordType,
+    title: payload.title,
+    createdAt,
+    sourceText: payload.sourceText ?? '',
+    finalBody: payload.finalBody ?? '',
+    tags: payload.tags ?? [],
+    date: payload.date,
+    notionPageId: payload.notionPageId,
+    notionUrl: payload.notionUrl,
+    notionSyncStatus: payload.notionSyncStatus || 'SUCCESS',
+    notionError: payload.notionError,
+    notionLastSyncedAt: payload.notionLastSyncedAt,
+    notionLastEditedTime: payload.notionLastEditedTime,
+    notionLastSyncedHash: payload.notionLastSyncedHash,
+    jsonPath,
+    mdPath: jsonPath.replace(/\.json$/, '.md'),
+  }
+}
+
+async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  switch (command) {
+    case 'resolve_central_home': {
+      const inputPath = String(args.inputPath ?? '').trim() || DEFAULT_MOCK_HOME
+      mockState.centralHome = inputPath
+      return {
+        centralHome: inputPath,
+        corrected: inputPath !== String(args.inputPath ?? ''),
+      } as T
+    }
+    case 'list_records': {
+      return clone(
+        [...mockState.records].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
+      ) as T
+    }
+    case 'list_logs': {
+      return clone([...mockState.logs].sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))) as T
+    }
+    case 'get_dashboard_stats': {
+      return createDashboardStats() as T
+    }
+    case 'upsert_record': {
+      const centralHome = String(args.centralHome ?? mockState.centralHome)
+      const payload = args.payload as RecordPayload
+      const previousJsonPath = (args.previousJsonPath as string | null | undefined) ?? null
+      if (previousJsonPath) {
+        const existing = findRecordByPath(previousJsonPath)
+        if (existing) {
+          existing.recordType = payload.recordType
+          existing.title = payload.title
+          existing.createdAt = payload.createdAt ?? existing.createdAt
+          existing.sourceText = payload.sourceText ?? ''
+          existing.finalBody = payload.finalBody ?? ''
+          existing.tags = payload.tags ?? []
+          existing.date = payload.date
+          existing.notionPageId = payload.notionPageId
+          existing.notionUrl = payload.notionUrl
+          existing.notionSyncStatus = payload.notionSyncStatus || existing.notionSyncStatus
+          existing.notionError = payload.notionError
+          return clone(existing) as T
+        }
+      }
+      const created = recordFromPayload(centralHome, payload)
+      mockState.records.unshift(created)
+      return clone(created) as T
+    }
+    case 'delete_record': {
+      const jsonPath = String(args.jsonPath ?? '')
+      mockState.records = mockState.records.filter((item) => item.jsonPath !== jsonPath)
+      return undefined as T
+    }
+    case 'rebuild_search_index': {
+      const result: RebuildIndexResult = {
+        indexedCount: mockState.records.length,
+        indexPath: `${mockState.centralHome}/.index/search.sqlite`,
+        tookMs: 24,
+      }
+      return result as T
+    }
+    case 'search_records': {
+      const query = String(args.query ?? '').toLowerCase().trim()
+      const recordType = String(args.recordType ?? '').trim()
+      const dateFrom = String(args.dateFrom ?? '').trim()
+      const dateTo = String(args.dateTo ?? '').trim()
+      const limit = Number(args.limit ?? 1000)
+      const offset = Number(args.offset ?? 0)
+      let filtered = [...mockState.records]
+      if (recordType) {
+        filtered = filtered.filter((item) => item.recordType === recordType)
+      }
+      if (dateFrom) {
+        filtered = filtered.filter((item) => (item.date || item.createdAt.slice(0, 10)) >= dateFrom)
+      }
+      if (dateTo) {
+        filtered = filtered.filter((item) => (item.date || item.createdAt.slice(0, 10)) <= dateTo)
+      }
+      if (query) {
+        filtered = filtered.filter((item) => {
+          const joined = `${item.title}\n${item.sourceText}\n${item.finalBody}\n${item.tags.join(' ')}`.toLowerCase()
+          return joined.includes(query)
+        })
+      }
+      const page = filtered.slice(offset, offset + limit)
+      const result: SearchResult = {
+        records: clone(page),
+        total: filtered.length,
+        indexed: true,
+        tookMs: 9,
+      }
+      return result as T
+    }
+    case 'run_ai_analysis': {
+      const prompt = String(args.prompt ?? '').trim()
+      const provider = String(args.provider ?? 'local')
+      const model = String(args.model ?? 'gpt-4.1-mini')
+      const content = [
+        'Summary: momentum is strongest on integration and UX upgrades.',
+        'Risk: sync reliability can regress if conflict handling is not covered by tests.',
+        'Risk: language growth will be expensive without key-based dictionaries.',
+        'Action: finish key-based i18n migration and add smoke E2E checks.',
+        'Action: ship timeline pulse + constellation view for stronger situational awareness.',
+        prompt ? `Context Prompt: ${prompt}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+      const result: AiAnalysisResponse = {
+        provider,
+        model,
+        content,
+      }
+      return result as T
+    }
+    case 'export_markdown_report': {
+      const title = String(args.title ?? 'KOF Note Report')
+      const outputPath = String(args.outputPath ?? `${mockState.centralHome}/reports/kof-report.md`)
+      const result: ExportReportResult = {
+        outputPath,
+        title,
+      }
+      return result as T
+    }
+    case 'get_home_fingerprint': {
+      return createFingerprint() as T
+    }
+    case 'get_health_diagnostics': {
+      return createHealth() as T
+    }
+    case 'get_app_settings': {
+      return clone(mockState.settings) as T
+    }
+    case 'save_app_settings': {
+      const settings = args.settings as AppSettings
+      mockState.settings = clone(settings)
+      return clone(mockState.settings) as T
+    }
+    case 'set_openai_api_key': {
+      mockState.hasOpenaiKey = true
+      return true as T
+    }
+    case 'has_openai_api_key': {
+      return mockState.hasOpenaiKey as T
+    }
+    case 'clear_openai_api_key': {
+      mockState.hasOpenaiKey = false
+      return true as T
+    }
+    case 'set_notion_api_key': {
+      mockState.hasNotionKey = true
+      return true as T
+    }
+    case 'has_notion_api_key': {
+      return mockState.hasNotionKey as T
+    }
+    case 'clear_notion_api_key': {
+      mockState.hasNotionKey = false
+      return true as T
+    }
+    case 'sync_record_to_notion':
+    case 'sync_record_bidirectional': {
+      const jsonPath = String(args.jsonPath ?? '')
+      const existing = findRecordByPath(jsonPath)
+      if (existing) {
+        existing.notionSyncStatus = 'SUCCESS'
+        existing.notionError = null
+      }
+      const result: NotionSyncResult = {
+        jsonPath,
+        notionPageId: existing?.notionPageId ?? `page_${Date.now()}`,
+        notionUrl: existing?.notionUrl ?? 'https://notion.so/mock',
+        notionSyncStatus: 'SUCCESS',
+        notionError: null,
+        action: 'upserted',
+        conflict: false,
+      }
+      return result as T
+    }
+    case 'sync_records_to_notion':
+    case 'sync_records_bidirectional':
+    case 'pull_records_from_notion': {
+      const paths = ((args.jsonPaths as string[] | undefined) ?? mockState.records.map((item) => item.jsonPath || '')).filter(
+        Boolean,
+      )
+      const results: NotionSyncResult[] = paths.map((path) => ({
+        jsonPath: path,
+        notionPageId: `page_${slugify(path).slice(0, 10)}`,
+        notionUrl: 'https://notion.so/mock',
+        notionSyncStatus: 'SUCCESS',
+        notionError: null,
+        action: 'upserted',
+        conflict: false,
+      }))
+      for (const path of paths) {
+        const existing = findRecordByPath(path)
+        if (existing) {
+          existing.notionSyncStatus = 'SUCCESS'
+          existing.notionError = null
+        }
+      }
+      const result: NotionBatchSyncResult = {
+        total: results.length,
+        success: results.length,
+        failed: 0,
+        conflicts: 0,
+        results,
+      }
+      return result as T
+    }
+    case 'notebooklm_health_check': {
+      return {
+        status: 'healthy',
+        auth: 'ok',
+        latencyMs: 45,
+      } as T
+    }
+    case 'notebooklm_list_notebooks': {
+      const limit = Number(args.limit ?? 50)
+      return clone(mockState.notebooks.slice(0, limit)) as T
+    }
+    case 'notebooklm_create_notebook': {
+      const title = String(args.title ?? '').trim() || `Notebook ${mockState.notebooks.length + 1}`
+      const created: NotebookSummary = {
+        id: `nb-${Date.now()}`,
+        name: title,
+        sourceCount: 0,
+        updatedAt: new Date().toISOString(),
+      }
+      mockState.notebooks.unshift(created)
+      return clone(created) as T
+    }
+    case 'notebooklm_add_record_source': {
+      const notebookId = String(args.notebookId ?? '')
+      const target = mockState.notebooks.find((item) => item.id === notebookId)
+      if (target) {
+        target.sourceCount = (target.sourceCount ?? 0) + 1
+        target.updatedAt = new Date().toISOString()
+      }
+      return { ok: true } as T
+    }
+    case 'notebooklm_ask': {
+      const question = String(args.question ?? '').trim()
+      const result: NotebookLmAskResult = {
+        answer: `Mock answer for: ${question || '(empty)'}`,
+        citations: ['Record: NotebookLM integration validation', 'Record: Knowledge graph dashboard mode'],
+      }
+      return result as T
+    }
+    default:
+      throw new Error(`Mock runtime: unsupported command ${command}`)
+  }
+}
+
+async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (MOCK_RUNTIME) {
+    return mockInvoke<T>(command, args)
+  }
+  return invoke<T>(command, args)
+}
+
 export async function resolveCentralHome(inputPath: string): Promise<ResolvedHome> {
-  return invoke<ResolvedHome>('resolve_central_home', { inputPath })
+  return invokeCommand<ResolvedHome>('resolve_central_home', { inputPath })
 }
 
 export async function listRecords(centralHome: string): Promise<RecordItem[]> {
-  return invoke<RecordItem[]>('list_records', { centralHome })
+  return invokeCommand<RecordItem[]>('list_records', { centralHome })
 }
 
 export async function listLogs(centralHome: string): Promise<LogEntry[]> {
-  return invoke<LogEntry[]>('list_logs', { centralHome })
+  return invokeCommand<LogEntry[]>('list_logs', { centralHome })
 }
 
 export async function getDashboardStats(centralHome: string): Promise<DashboardStats> {
-  return invoke<DashboardStats>('get_dashboard_stats', { centralHome })
+  return invokeCommand<DashboardStats>('get_dashboard_stats', { centralHome })
 }
 
 export async function upsertRecord(
@@ -41,7 +587,7 @@ export async function upsertRecord(
   payload: RecordPayload,
   previousJsonPath?: string | null,
 ): Promise<RecordItem> {
-  return invoke<RecordItem>('upsert_record', {
+  return invokeCommand<RecordItem>('upsert_record', {
     centralHome,
     payload,
     previousJsonPath: previousJsonPath ?? null,
@@ -49,11 +595,11 @@ export async function upsertRecord(
 }
 
 export async function deleteRecord(centralHome: string, jsonPath: string): Promise<void> {
-  return invoke<void>('delete_record', { centralHome, jsonPath })
+  return invokeCommand<void>('delete_record', { centralHome, jsonPath })
 }
 
 export async function rebuildSearchIndex(centralHome: string): Promise<RebuildIndexResult> {
-  return invoke<RebuildIndexResult>('rebuild_search_index', { centralHome })
+  return invokeCommand<RebuildIndexResult>('rebuild_search_index', { centralHome })
 }
 
 export async function searchRecords(args: {
@@ -65,7 +611,7 @@ export async function searchRecords(args: {
   limit?: number
   offset?: number
 }): Promise<SearchResult> {
-  return invoke<SearchResult>('search_records', args)
+  return invokeCommand<SearchResult>('search_records', args)
 }
 
 export async function runAiAnalysis(args: {
@@ -77,7 +623,7 @@ export async function runAiAnalysis(args: {
   includeLogs?: boolean
   maxRecords?: number
 }): Promise<AiAnalysisResponse> {
-  return invoke<AiAnalysisResponse>('run_ai_analysis', args)
+  return invokeCommand<AiAnalysisResponse>('run_ai_analysis', args)
 }
 
 export async function exportMarkdownReport(args: {
@@ -86,47 +632,47 @@ export async function exportMarkdownReport(args: {
   title?: string
   recentDays?: number
 }): Promise<ExportReportResult> {
-  return invoke<ExportReportResult>('export_markdown_report', args)
+  return invokeCommand<ExportReportResult>('export_markdown_report', args)
 }
 
 export async function getHomeFingerprint(centralHome: string): Promise<HomeFingerprint> {
-  return invoke<HomeFingerprint>('get_home_fingerprint', { centralHome })
+  return invokeCommand<HomeFingerprint>('get_home_fingerprint', { centralHome })
 }
 
 export async function getHealthDiagnostics(centralHome: string): Promise<HealthDiagnostics> {
-  return invoke<HealthDiagnostics>('get_health_diagnostics', { centralHome })
+  return invokeCommand<HealthDiagnostics>('get_health_diagnostics', { centralHome })
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
-  return invoke<AppSettings>('get_app_settings')
+  return invokeCommand<AppSettings>('get_app_settings')
 }
 
 export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
-  return invoke<AppSettings>('save_app_settings', { settings })
+  return invokeCommand<AppSettings>('save_app_settings', { settings })
 }
 
 export async function setOpenaiApiKey(apiKey: string): Promise<boolean> {
-  return invoke<boolean>('set_openai_api_key', { apiKey })
+  return invokeCommand<boolean>('set_openai_api_key', { apiKey })
 }
 
 export async function hasOpenaiApiKey(): Promise<boolean> {
-  return invoke<boolean>('has_openai_api_key')
+  return invokeCommand<boolean>('has_openai_api_key')
 }
 
 export async function clearOpenaiApiKey(): Promise<boolean> {
-  return invoke<boolean>('clear_openai_api_key')
+  return invokeCommand<boolean>('clear_openai_api_key')
 }
 
 export async function setNotionApiKey(apiKey: string): Promise<boolean> {
-  return invoke<boolean>('set_notion_api_key', { apiKey })
+  return invokeCommand<boolean>('set_notion_api_key', { apiKey })
 }
 
 export async function hasNotionApiKey(): Promise<boolean> {
-  return invoke<boolean>('has_notion_api_key')
+  return invokeCommand<boolean>('has_notion_api_key')
 }
 
 export async function clearNotionApiKey(): Promise<boolean> {
-  return invoke<boolean>('clear_notion_api_key')
+  return invokeCommand<boolean>('clear_notion_api_key')
 }
 
 export async function syncRecordToNotion(args: {
@@ -135,7 +681,7 @@ export async function syncRecordToNotion(args: {
   databaseId?: string
   conflictStrategy?: NotionConflictStrategy
 }): Promise<NotionSyncResult> {
-  return invoke<NotionSyncResult>('sync_record_to_notion', args)
+  return invokeCommand<NotionSyncResult>('sync_record_to_notion', args)
 }
 
 export async function syncRecordsToNotion(args: {
@@ -144,7 +690,7 @@ export async function syncRecordsToNotion(args: {
   databaseId?: string
   conflictStrategy?: NotionConflictStrategy
 }): Promise<NotionBatchSyncResult> {
-  return invoke<NotionBatchSyncResult>('sync_records_to_notion', args)
+  return invokeCommand<NotionBatchSyncResult>('sync_records_to_notion', args)
 }
 
 export async function syncRecordBidirectional(args: {
@@ -153,7 +699,7 @@ export async function syncRecordBidirectional(args: {
   databaseId?: string
   conflictStrategy?: NotionConflictStrategy
 }): Promise<NotionSyncResult> {
-  return invoke<NotionSyncResult>('sync_record_bidirectional', args)
+  return invokeCommand<NotionSyncResult>('sync_record_bidirectional', args)
 }
 
 export async function syncRecordsBidirectional(args: {
@@ -162,7 +708,7 @@ export async function syncRecordsBidirectional(args: {
   databaseId?: string
   conflictStrategy?: NotionConflictStrategy
 }): Promise<NotionBatchSyncResult> {
-  return invoke<NotionBatchSyncResult>('sync_records_bidirectional', args)
+  return invokeCommand<NotionBatchSyncResult>('sync_records_bidirectional', args)
 }
 
 export async function pullRecordsFromNotion(args: {
@@ -170,25 +716,25 @@ export async function pullRecordsFromNotion(args: {
   databaseId?: string
   conflictStrategy?: NotionConflictStrategy
 }): Promise<NotionBatchSyncResult> {
-  return invoke<NotionBatchSyncResult>('pull_records_from_notion', args)
+  return invokeCommand<NotionBatchSyncResult>('pull_records_from_notion', args)
 }
 
 export async function notebooklmHealthCheck(config?: NotebookLmConfig): Promise<unknown> {
-  return invoke<unknown>('notebooklm_health_check', { config })
+  return invokeCommand<unknown>('notebooklm_health_check', { config })
 }
 
 export async function notebooklmListNotebooks(args?: {
   limit?: number
   config?: NotebookLmConfig
 }): Promise<NotebookSummary[]> {
-  return invoke<NotebookSummary[]>('notebooklm_list_notebooks', args ?? {})
+  return invokeCommand<NotebookSummary[]>('notebooklm_list_notebooks', args ?? {})
 }
 
 export async function notebooklmCreateNotebook(args?: {
   title?: string
   config?: NotebookLmConfig
 }): Promise<NotebookSummary> {
-  return invoke<NotebookSummary>('notebooklm_create_notebook', args ?? {})
+  return invokeCommand<NotebookSummary>('notebooklm_create_notebook', args ?? {})
 }
 
 export async function notebooklmAddRecordSource(args: {
@@ -198,7 +744,7 @@ export async function notebooklmAddRecordSource(args: {
   title?: string
   config?: NotebookLmConfig
 }): Promise<unknown> {
-  return invoke<unknown>('notebooklm_add_record_source', args)
+  return invokeCommand<unknown>('notebooklm_add_record_source', args)
 }
 
 export async function notebooklmAsk(args: {
@@ -207,5 +753,18 @@ export async function notebooklmAsk(args: {
   includeCitations?: boolean
   config?: NotebookLmConfig
 }): Promise<NotebookLmAskResult> {
-  return invoke<NotebookLmAskResult>('notebooklm_ask', args)
+  return invokeCommand<NotebookLmAskResult>('notebooklm_ask', args)
+}
+
+export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {
+  if (MOCK_RUNTIME) {
+    return defaultPath || mockState.centralHome
+  }
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    defaultPath,
+    title: 'Select Central Home',
+  })
+  return typeof selected === 'string' ? selected : null
 }

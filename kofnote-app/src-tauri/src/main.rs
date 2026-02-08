@@ -3944,6 +3944,7 @@ fn parse_mcp_tool_payload(response: &Value) -> Result<Value, String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             resolve_central_home,
             list_records,
