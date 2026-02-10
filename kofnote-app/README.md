@@ -65,6 +65,21 @@ Now includes M7 connectors for Notion + NotebookLM.
   - `notion_last_edited_time`
   - `notion_last_synced_hash`
 
+### Debate Provider Registry (config layer)
+- Provider abstraction added as a registry-backed settings layer (`providerRegistry.providers[]`):
+  - `id`
+  - `type` (`cli` | `web`)
+  - `enabled`
+  - `capabilities`
+- Built-in configurable providers:
+  - CLI: `codex-cli`, `gemini-cli`, `claude-cli`
+  - Web: `chatgpt-web`, `gemini-web`, `claude-web`
+- Runtime in current build:
+  - `codex-cli`: wired to real `codex exec`
+  - `gemini-cli`, `claude-cli`, all `*-web`: config-ready, currently local stub fallback
+- Example config:
+  - `examples/providers.example.json`
+
 ## Data compatibility
 
 Reads and writes are compatible with `keeponfirst-local-brain`:

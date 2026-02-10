@@ -49,9 +49,11 @@ import {
   upsertRecord,
 } from './lib/tauri'
 import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from './i18n'
+import { buildProviderRegistrySettings, ProviderRegistry } from './lib/providerRegistry'
 import type {
   AiProvider,
   AppSettings,
+  DebateProviderConfig,
   DebateModeResponse,
   DebateOutputType,
   DebateReplayResponse,
@@ -202,6 +204,14 @@ function payloadFromForm(form: RecordFormState): RecordPayload {
     finalBody: form.finalBody,
     sourceText: form.sourceText,
   }
+}
+
+function parseProviderCapabilitiesInput(value: string): string[] {
+  const normalized = value
+    .split(/[\n,]/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+  return [...new Set(normalized)]
 }
 
 function makeProfile(name = 'New Profile'): WorkspaceProfile {
@@ -480,7 +490,7 @@ function App() {
     'Local-first\n可 replay\n固定 5 角色 + 3 回合\n輸出可執行 Final Packet',
   )
   const [debateOutputType, setDebateOutputType] = useState<DebateOutputType>('decision')
-  const [debateProvider, setDebateProvider] = useState<AiProvider>('local')
+  const [debateProvider, setDebateProvider] = useState('local')
   const [debateModel, setDebateModel] = useState(DEFAULT_MODEL)
   const [debateWritebackType, setDebateWritebackType] = useState<'decision' | 'worklog'>('decision')
   const [debateMaxTurnSeconds, setDebateMaxTurnSeconds] = useState(35)
@@ -505,6 +515,7 @@ function App() {
         defaultNotebookId: null,
       },
     },
+    providerRegistry: buildProviderRegistrySettings(),
   })
   const [selectedProfileId, setSelectedProfileId] = useState<string>('')
   const [profileDraft, setProfileDraft] = useState<WorkspaceProfile>(makeProfile())
@@ -578,6 +589,22 @@ function App() {
       }
     },
     [t],
+  )
+
+  const debateProviderRegistry = useMemo(() => new ProviderRegistry(appSettings.providerRegistry), [appSettings.providerRegistry])
+  const debateProviderOptions = useMemo(() => {
+    const enabled = debateProviderRegistry.list({ enabledOnly: true }).map((item) => item.id)
+    return ['local', ...enabled.filter((item) => item !== 'local')]
+  }, [debateProviderRegistry])
+  const debateProviderLabel = useCallback(
+    (providerId: string) => {
+      if (providerId === 'local') {
+        return 'local'
+      }
+      const provider = debateProviderRegistry.get(providerId)
+      return provider ? `${provider.id} (${provider.type})` : providerId
+    },
+    [debateProviderRegistry],
   )
 
   const pushNotice = useCallback((type: Notice['type'], text: string) => {
@@ -1006,22 +1033,26 @@ function App() {
       hasClaudeApiKey(),
       hasNotionApiKey(),
     ])
-    setAppSettings(settings)
+    const normalizedSettings: AppSettings = {
+      ...settings,
+      providerRegistry: buildProviderRegistrySettings(settings.providerRegistry),
+    }
+    setAppSettings(normalizedSettings)
     setHasOpenaiKey(hasOpenai)
     setHasGeminiKey(hasGemini)
     setHasClaudeKey(hasClaude)
     setHasNotionKey(notionKey)
-    setSelectedNotebookId(settings.integrations.notebooklm.defaultNotebookId ?? '')
+    setSelectedNotebookId(normalizedSettings.integrations.notebooklm.defaultNotebookId ?? '')
 
-    if (settings.activeProfileId) {
-      setSelectedProfileId(settings.activeProfileId)
-      const active = settings.profiles.find((item) => item.id === settings.activeProfileId)
+    if (normalizedSettings.activeProfileId) {
+      setSelectedProfileId(normalizedSettings.activeProfileId)
+      const active = normalizedSettings.profiles.find((item) => item.id === normalizedSettings.activeProfileId)
       if (active) {
         setProfileDraft(active)
       }
     }
 
-    return settings
+    return normalizedSettings
   }, [])
 
   useEffect(() => {
@@ -1061,6 +1092,12 @@ function App() {
 
     return () => window.clearTimeout(timer)
   }, [applySearch, centralHome, pushNotice, t])
+
+  useEffect(() => {
+    if (!debateProviderOptions.includes(debateProvider)) {
+      setDebateProvider('local')
+    }
+  }, [debateProvider, debateProviderOptions])
 
   useEffect(() => {
     if (!centralHome) {
@@ -1636,6 +1673,49 @@ function App() {
       pushNotice('success', t('Settings saved.', '設定已儲存。'))
     })
   }, [pushNotice, t, withBusy])
+
+  const updateProviderRegistryEntry = useCallback((providerId: string, patch: Partial<DebateProviderConfig>) => {
+    setAppSettings((prev) => {
+      const normalized = buildProviderRegistrySettings(prev.providerRegistry)
+      const providers = normalized.providers.map((item) => {
+        if (item.id !== providerId) {
+          return item
+        }
+        const nextCapabilities =
+          patch.capabilities && patch.capabilities.length > 0
+            ? patch.capabilities
+            : patch.capabilities
+              ? ['debate']
+              : item.capabilities
+        return {
+          ...item,
+          ...patch,
+          capabilities: nextCapabilities,
+        }
+      })
+
+      return {
+        ...prev,
+        providerRegistry: {
+          providers,
+        },
+      }
+    })
+  }, [])
+
+  const handleResetProviderRegistryDraft = useCallback(() => {
+    setAppSettings((prev) => ({
+      ...prev,
+      providerRegistry: buildProviderRegistrySettings(),
+    }))
+    pushNotice(
+      'info',
+      t(
+        'Provider defaults restored. Click "Save Provider Registry" to persist.',
+        '已還原 Provider 預設值，請按「儲存 Provider 設定」完成寫入。',
+      ),
+    )
+  }, [pushNotice, t])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2581,6 +2661,15 @@ function App() {
     const debateConsensus = debateResult?.finalPacket.consensus
     const debateActions = debateResult?.finalPacket.nextActions ?? []
     const replayIssues = debateReplayResult?.consistency.issues ?? []
+    const debateProviderRuntimeHint =
+      debateProvider === 'codex-cli'
+        ? t('Provider runtime: codex exec (live).', 'Provider 執行模式：codex exec（即時）。')
+        : debateProvider === 'local'
+          ? t('Provider runtime: local heuristic.', 'Provider 執行模式：本地 heuristic。')
+          : t(
+              'Provider runtime: local fallback stub (automation not wired yet).',
+              'Provider 執行模式：本地 fallback stub（尚未接自動化執行）。',
+            )
     const cards: Array<{ id: 'summary' | 'risks' | 'actions'; title: string; items: string[]; empty: string }> = [
       {
         id: 'summary',
@@ -2666,12 +2755,14 @@ function App() {
 
             <label>
               {t('Provider (all fixed roles)', 'Provider（套用到所有角色）')}
-              <select value={debateProvider} onChange={(event) => setDebateProvider(event.target.value as AiProvider)}>
-                <option value="local">local</option>
-                <option value="openai">openai</option>
-                <option value="gemini">gemini</option>
-                <option value="claude">claude</option>
+              <select value={debateProvider} onChange={(event) => setDebateProvider(event.target.value)}>
+                {debateProviderOptions.map((providerId) => (
+                  <option key={providerId} value={providerId}>
+                    {debateProviderLabel(providerId)}
+                  </option>
+                ))}
               </select>
+              <small className="muted">{debateProviderRuntimeHint}</small>
             </label>
 
             <label>
@@ -3315,6 +3406,78 @@ function App() {
               }}
             >
               {t('Delete Profile', '刪除設定檔')}
+            </button>
+          </div>
+
+          <hr className="separator" />
+
+          <h3>{t('Debate Provider Registry', 'Debate Provider 註冊表')}</h3>
+          <p className="muted">
+            {t(
+              'Configure CLI/Web providers available to Debate Mode (config layer only).',
+              '設定 Debate Mode 可用的 CLI/Web provider（僅設定層）。',
+            )}
+          </p>
+
+          <div className="provider-registry-grid">
+            {appSettings.providerRegistry.providers.map((provider) => (
+              <div key={provider.id} className="provider-registry-card">
+                <div className="panel-head-inline">
+                  <h4>{provider.id}</h4>
+                  <span className="muted">{provider.type.toUpperCase()}</span>
+                </div>
+
+                <div className="form-grid two-col-grid">
+                  <label>
+                    {t('Type', '類型')}
+                    <select
+                      value={provider.type}
+                      onChange={(event) =>
+                        updateProviderRegistryEntry(provider.id, {
+                          type: event.target.value === 'web' ? 'web' : 'cli',
+                        })
+                      }
+                    >
+                      <option value="cli">cli</option>
+                      <option value="web">web</option>
+                    </select>
+                  </label>
+
+                  <label className="checkbox-field provider-enabled-field">
+                    <input
+                      type="checkbox"
+                      checked={provider.enabled}
+                      onChange={(event) =>
+                        updateProviderRegistryEntry(provider.id, {
+                          enabled: event.target.checked,
+                        })
+                      }
+                    />
+                    <span>{t('Enabled', '啟用')}</span>
+                  </label>
+                </div>
+
+                <label className="block-field">
+                  {t('Capabilities (comma separated)', '能力（逗號分隔）')}
+                  <input
+                    value={provider.capabilities.join(', ')}
+                    onChange={(event) =>
+                      updateProviderRegistryEntry(provider.id, {
+                        capabilities: parseProviderCapabilitiesInput(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+
+          <div className="toolbar-row two-col">
+            <button type="button" onClick={() => void handleSaveSettings(appSettings)} disabled={busy}>
+              {t('Save Provider Registry', '儲存 Provider 設定')}
+            </button>
+            <button type="button" className="ghost-btn" onClick={handleResetProviderRegistryDraft} disabled={busy}>
+              {t('Reset Provider Defaults', '還原 Provider 預設')}
             </button>
           </div>
 

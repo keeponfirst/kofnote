@@ -115,12 +115,26 @@ export type IntegrationsSettings = {
   notebooklm: NotebookLmSettings
 }
 
+export type DebateProviderType = 'cli' | 'web'
+
+export type DebateProviderConfig = {
+  id: string
+  type: DebateProviderType
+  enabled: boolean
+  capabilities: string[]
+}
+
+export type DebateProviderRegistrySettings = {
+  providers: DebateProviderConfig[]
+}
+
 export type AppSettings = {
   profiles: WorkspaceProfile[]
   activeProfileId?: string | null
   pollIntervalSec: number
   uiPreferences: Record<string, unknown>
   integrations: IntegrationsSettings
+  providerRegistry: DebateProviderRegistrySettings
 }
 
 export type ExportReportResult = {

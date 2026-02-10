@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration as StdDuration, Instant};
+use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 
 const RECORD_TYPE_DIRS: [(&str, &str); 5] = [
     ("decision", "decisions"),
@@ -221,6 +221,33 @@ impl Default for IntegrationsSettings {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct DebateProviderConfig {
+    id: String,
+    #[serde(rename = "type")]
+    provider_type: String,
+    #[serde(default = "default_enabled_true")]
+    enabled: bool,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProviderRegistrySettings {
+    #[serde(default = "default_debate_provider_configs")]
+    providers: Vec<DebateProviderConfig>,
+}
+
+impl Default for ProviderRegistrySettings {
+    fn default() -> Self {
+        Self {
+            providers: default_debate_provider_configs(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct AppSettings {
     #[serde(default)]
     profiles: Vec<WorkspaceProfile>,
@@ -232,6 +259,8 @@ struct AppSettings {
     ui_preferences: Value,
     #[serde(default)]
     integrations: IntegrationsSettings,
+    #[serde(default)]
+    provider_registry: ProviderRegistrySettings,
 }
 
 impl Default for AppSettings {
@@ -242,12 +271,82 @@ impl Default for AppSettings {
             poll_interval_sec: default_poll_interval(),
             ui_preferences: json!({}),
             integrations: IntegrationsSettings::default(),
+            provider_registry: ProviderRegistrySettings::default(),
         }
     }
 }
 
 fn default_poll_interval() -> u64 {
     8
+}
+
+fn default_enabled_true() -> bool {
+    true
+}
+
+fn default_debate_provider_configs() -> Vec<DebateProviderConfig> {
+    vec![
+        DebateProviderConfig {
+            id: "codex-cli".to_string(),
+            provider_type: "cli".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "cli-execution".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+        DebateProviderConfig {
+            id: "gemini-cli".to_string(),
+            provider_type: "cli".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "cli-execution".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+        DebateProviderConfig {
+            id: "claude-cli".to_string(),
+            provider_type: "cli".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "cli-execution".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+        DebateProviderConfig {
+            id: "chatgpt-web".to_string(),
+            provider_type: "web".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "web-automation".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+        DebateProviderConfig {
+            id: "gemini-web".to_string(),
+            provider_type: "web".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "web-automation".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+        DebateProviderConfig {
+            id: "claude-web".to_string(),
+            provider_type: "web".to_string(),
+            enabled: true,
+            capabilities: vec![
+                "debate".to_string(),
+                "web-automation".to_string(),
+                "structured-output".to_string(),
+            ],
+        },
+    ]
 }
 
 fn default_notebooklm_command() -> String {
@@ -417,6 +516,7 @@ struct DebateReplayResponse {
 struct DebateRuntimeParticipant {
     role: DebateRole,
     model_provider: String,
+    provider_type: String,
     model_name: String,
 }
 
@@ -430,6 +530,41 @@ struct DebateNormalizedRequest {
     max_turn_tokens: u32,
     writeback_record_type: Option<String>,
     warning_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DebateProviderRegistry {
+    providers: HashMap<String, DebateProviderConfig>,
+}
+
+impl DebateProviderRegistry {
+    fn from_settings(settings: &AppSettings) -> Self {
+        let mut providers = HashMap::new();
+        for item in &settings.provider_registry.providers {
+            let id = item.id.trim().to_lowercase();
+            if id.is_empty() {
+                continue;
+            }
+            providers.insert(
+                id.clone(),
+                DebateProviderConfig {
+                    id,
+                    provider_type: normalize_provider_type(&item.provider_type),
+                    enabled: item.enabled,
+                    capabilities: normalize_provider_capabilities(&item.capabilities),
+                },
+            );
+        }
+        Self { providers }
+    }
+
+    fn get(&self, provider_id: &str) -> Option<&DebateProviderConfig> {
+        self.providers.get(&provider_id.trim().to_lowercase())
+    }
+
+    fn is_enabled(&self, provider_id: &str) -> bool {
+        self.get(provider_id).map(|item| item.enabled).unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2027,7 +2162,9 @@ fn run_openai_analysis(
 }
 
 fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
-    let normalized = normalize_debate_request(request)?;
+    let settings = load_settings();
+    let provider_registry = DebateProviderRegistry::from_settings(&settings);
+    let normalized = normalize_debate_request(request, &provider_registry)?;
     ensure_structure(central_home).map_err(|error| error.to_string())?;
 
     let run_id = generate_debate_run_id();
@@ -2057,6 +2194,7 @@ fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> 
                     json!({
                         "role": item.role.as_str(),
                         "modelProvider": item.model_provider,
+                        "providerType": item.provider_type,
                         "modelName": item.model_name,
                     })
                 })
@@ -2299,7 +2437,10 @@ fn replay_debate_mode_internal(central_home: &Path, run_id: &str) -> Result<Deba
     })
 }
 
-fn normalize_debate_request(request: DebateModeRequest) -> Result<DebateNormalizedRequest, String> {
+fn normalize_debate_request(
+    request: DebateModeRequest,
+    provider_registry: &DebateProviderRegistry,
+) -> Result<DebateNormalizedRequest, String> {
     let problem = request.problem.trim().to_string();
     if problem.is_empty() {
         return Err(debate_error("DEBATE_ERR_INPUT", "Problem cannot be empty"));
@@ -2318,15 +2459,21 @@ fn normalize_debate_request(request: DebateModeRequest) -> Result<DebateNormaliz
             .unwrap_or_else(|| "local".to_string());
         let model_name_input = config.model_name.unwrap_or_default();
         if let Some(role) = parse_debate_role(&role_name) {
-            let provider = normalize_debate_provider(provider_input.trim());
-            if provider != provider_input.trim().to_lowercase() {
+            let input_normalized = provider_input.trim().to_lowercase();
+            let (provider, provider_warning) =
+                normalize_debate_provider(provider_input.trim(), provider_registry);
+            if provider != input_normalized && !input_normalized.is_empty() {
                 warning_codes.push("DEBATE_WARN_PROVIDER_NORMALIZED".to_string());
+            }
+            if let Some(code) = provider_warning {
+                warning_codes.push(code);
             }
             provided.insert(
                 role,
                 DebateRuntimeParticipant {
                     role,
                     model_provider: provider.clone(),
+                    provider_type: resolve_provider_type(&provider, provider_registry),
                     model_name: normalize_debate_model_name(&provider, &model_name_input),
                 },
             );
@@ -2343,6 +2490,7 @@ fn normalize_debate_request(request: DebateModeRequest) -> Result<DebateNormaliz
             participants.push(DebateRuntimeParticipant {
                 role,
                 model_provider: "local".to_string(),
+                provider_type: "builtin".to_string(),
                 model_name: normalize_debate_model_name("local", ""),
             });
         }
@@ -2385,12 +2533,53 @@ fn normalize_debate_output_type(value: &str) -> Result<String, String> {
     }
 }
 
-fn normalize_debate_provider(value: &str) -> String {
-    let normalized = value.trim().to_lowercase();
-    match normalized.as_str() {
-        "openai" | "gemini" | "claude" | "local" => normalized,
-        _ => "local".to_string(),
+fn normalize_provider_alias(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "codex" => "codex-cli".to_string(),
+        "chatgpt" => "chatgpt-web".to_string(),
+        other => other.to_string(),
     }
+}
+
+fn resolve_provider_type(provider_id: &str, provider_registry: &DebateProviderRegistry) -> String {
+    if matches!(provider_id, "openai" | "gemini" | "claude" | "local") {
+        "builtin".to_string()
+    } else if let Some(provider) = provider_registry.get(provider_id) {
+        provider.provider_type.clone()
+    } else {
+        "builtin".to_string()
+    }
+}
+
+fn normalize_debate_provider(
+    value: &str,
+    provider_registry: &DebateProviderRegistry,
+) -> (String, Option<String>) {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty() {
+        return ("local".to_string(), None);
+    }
+
+    if matches!(normalized.as_str(), "openai" | "gemini" | "claude" | "local") {
+        return (normalized, None);
+    }
+
+    let canonical = normalize_provider_alias(&normalized);
+    if provider_registry.is_enabled(&canonical) {
+        return (canonical, None);
+    }
+
+    if provider_registry.get(&canonical).is_some() {
+        return (
+            "local".to_string(),
+            Some("DEBATE_WARN_PROVIDER_DISABLED_FALLBACK_LOCAL".to_string()),
+        );
+    }
+
+    (
+        "local".to_string(),
+        Some("DEBATE_WARN_PROVIDER_UNKNOWN_FALLBACK_LOCAL".to_string()),
+    )
 }
 
 fn normalize_debate_model_name(provider: &str, model_name: &str) -> String {
@@ -2403,6 +2592,12 @@ fn normalize_debate_model_name(provider: &str, model_name: &str) -> String {
         "openai" => "gpt-4.1-mini".to_string(),
         "gemini" => "gemini-2.0-flash".to_string(),
         "claude" => "claude-3-5-sonnet-latest".to_string(),
+        "codex-cli" => "codex".to_string(),
+        "gemini-cli" => "gemini".to_string(),
+        "claude-cli" => "claude".to_string(),
+        "chatgpt-web" => "chatgpt-web".to_string(),
+        "gemini-web" => "gemini-web".to_string(),
+        "claude-web" => "claude-web".to_string(),
         _ => "local-heuristic-v1".to_string(),
     }
 }
@@ -2470,7 +2665,9 @@ fn execute_debate_turn(
     let started_at = Local::now().to_rfc3339();
     let timer = Instant::now();
 
-    let result = if participant.model_provider == "local" {
+    let result = if participant.model_provider == "local"
+        || provider_uses_local_stub(&participant.model_provider, &participant.provider_type)
+    {
         Ok(generate_local_debate_text(
             participant.role,
             round,
@@ -2552,6 +2749,13 @@ fn execute_debate_turn(
     }
 }
 
+fn provider_uses_local_stub(provider_id: &str, provider_type: &str) -> bool {
+    if provider_type == "web" {
+        return true;
+    }
+    matches!(provider_id, "gemini-cli" | "claude-cli")
+}
+
 fn build_debate_provider_prompt(
     role: DebateRole,
     round: DebateRound,
@@ -2615,6 +2819,8 @@ fn run_debate_provider_text(
     max_turn_tokens: u32,
 ) -> Result<String, String> {
     match provider {
+        "codex-cli" => run_codex_cli_completion(model, prompt, max_turn_seconds, max_turn_tokens)
+            .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_CODEX_CLI", &error)),
         "openai" => run_openai_text_completion(model, prompt, max_turn_seconds, max_turn_tokens)
             .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_OPENAI", &error)),
         "gemini" => run_gemini_text_completion(model, prompt, max_turn_seconds, max_turn_tokens)
@@ -2627,6 +2833,92 @@ fn run_debate_provider_text(
             &format!("Unsupported provider: {provider}"),
         )),
     }
+}
+
+fn run_codex_cli_completion(
+    model: &str,
+    prompt: &str,
+    max_turn_seconds: u64,
+    _max_turn_tokens: u32,
+) -> Result<String, String> {
+    let model_name = if model.trim().is_empty() {
+        "gpt-4.1-mini".to_string()
+    } else {
+        model.trim().to_string()
+    };
+    let timeout_secs = max_turn_seconds.clamp(10, 180);
+    let output_path = std::env::temp_dir().join(format!(
+        "kofnote_codex_debate_{}_{}.txt",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| StdDuration::from_secs(0))
+            .as_millis()
+    ));
+
+    let args = vec![
+        "exec".to_string(),
+        "-".to_string(),
+        "--model".to_string(),
+        model_name,
+        "--skip-git-repo-check".to_string(),
+        "--sandbox".to_string(),
+        "read-only".to_string(),
+        "--output-last-message".to_string(),
+        output_path.to_string_lossy().to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+    ];
+
+    let mut child = Command::new("codex")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Failed to start `codex`: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .map_err(|error| format!("Failed to write prompt to `codex`: {error}"))?;
+    }
+
+    let deadline = Instant::now() + StdDuration::from_secs(timeout_secs);
+    let status = loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&output_path);
+            return Err(format!("`codex exec` timed out after {timeout_secs}s"));
+        }
+
+        match child.try_wait() {
+            Ok(Some(done)) => break done,
+            Ok(None) => thread::sleep(StdDuration::from_millis(120)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(&output_path);
+                return Err(format!("Failed while waiting for `codex`: {error}"));
+            }
+        }
+    };
+
+    if !status.success() {
+        let _ = fs::remove_file(&output_path);
+        return Err(format!("`codex exec` exited with status {status}"));
+    }
+
+    let output = fs::read_to_string(&output_path)
+        .map_err(|error| format!("Failed reading codex output file: {error}"))?;
+    let _ = fs::remove_file(&output_path);
+
+    if output.trim().is_empty() {
+        return Err("`codex exec` returned empty output".to_string());
+    }
+
+    Ok(output.trim().to_string())
 }
 
 fn run_openai_text_completion(
@@ -4226,6 +4518,62 @@ fn save_settings(settings: &AppSettings) -> Result<(), String> {
     write_atomic(&path, &bytes).map_err(|error| error.to_string())
 }
 
+fn normalize_provider_type(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("web") {
+        "web".to_string()
+    } else {
+        "cli".to_string()
+    }
+}
+
+fn normalize_provider_capabilities(input: &[String]) -> Vec<String> {
+    let normalized = input
+        .iter()
+        .map(|item| item.trim().to_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    let deduped = dedup_non_empty(normalized);
+    if deduped.is_empty() {
+        vec!["debate".to_string()]
+    } else {
+        deduped
+    }
+}
+
+fn normalize_provider_registry_settings(
+    registry: ProviderRegistrySettings,
+) -> ProviderRegistrySettings {
+    let mut by_id = HashMap::new();
+    for item in default_debate_provider_configs() {
+        by_id.insert(item.id.clone(), item);
+    }
+
+    for mut item in registry.providers {
+        let id = item.id.trim().to_lowercase();
+        if id.is_empty() {
+            continue;
+        }
+        let defaults = by_id.get(&id).cloned();
+        item.id = id.clone();
+        item.provider_type = normalize_provider_type(&item.provider_type);
+        item.capabilities = normalize_provider_capabilities(
+            &if item.capabilities.is_empty() {
+                defaults
+                    .as_ref()
+                    .map(|base| base.capabilities.clone())
+                    .unwrap_or_else(|| vec!["debate".to_string()])
+            } else {
+                item.capabilities.clone()
+            },
+        );
+        by_id.insert(id, item);
+    }
+
+    let mut providers = by_id.into_values().collect::<Vec<_>>();
+    providers.sort_by(|a, b| a.id.cmp(&b.id));
+    ProviderRegistrySettings { providers }
+}
+
 fn normalize_settings(mut settings: AppSettings) -> AppSettings {
     if settings.poll_interval_sec == 0 {
         settings.poll_interval_sec = default_poll_interval();
@@ -4307,6 +4655,9 @@ fn normalize_settings(mut settings: AppSettings) -> AppSettings {
             settings.integrations.notebooklm.args = default_notebooklm_args();
         }
     }
+
+    settings.provider_registry =
+        normalize_provider_registry_settings(settings.provider_registry.clone());
 
     settings
 }
@@ -6184,6 +6535,54 @@ mod tests {
 
         assert_eq!(local_keys, mixed_keys);
         cleanup_test_home(&home);
+    }
+
+    #[test]
+    fn provider_registry_defaults_are_available() {
+        let settings = normalize_settings(AppSettings::default());
+        let registry = DebateProviderRegistry::from_settings(&settings);
+
+        assert!(registry.is_enabled("codex-cli"));
+        assert!(registry.is_enabled("gemini-cli"));
+        assert!(registry.is_enabled("claude-web"));
+    }
+
+    #[test]
+    fn disabled_provider_falls_back_to_local() {
+        let mut settings = AppSettings::default();
+        for provider in &mut settings.provider_registry.providers {
+            if provider.id == "codex-cli" {
+                provider.enabled = false;
+            }
+        }
+        let registry = DebateProviderRegistry::from_settings(&normalize_settings(settings));
+
+        let mut request = sample_request();
+        request.participants = vec![DebateParticipantConfig {
+            role: Some("Proponent".to_string()),
+            model_provider: Some("codex-cli".to_string()),
+            model_name: Some("codex".to_string()),
+        }];
+
+        let normalized = normalize_debate_request(request, &registry).expect("normalize request");
+        let proponent = normalized
+            .participants
+            .iter()
+            .find(|item| item.role == DebateRole::Proponent)
+            .expect("proponent exists");
+
+        assert_eq!(proponent.model_provider, "local");
+        assert!(normalized
+            .warning_codes
+            .iter()
+            .any(|code| code == "DEBATE_WARN_PROVIDER_DISABLED_FALLBACK_LOCAL"));
+    }
+
+    #[test]
+    fn provider_stub_matrix_matches_expectation() {
+        assert!(!provider_uses_local_stub("codex-cli", "cli"));
+        assert!(provider_uses_local_stub("gemini-cli", "cli"));
+        assert!(provider_uses_local_stub("chatgpt-web", "web"));
     }
 }
 

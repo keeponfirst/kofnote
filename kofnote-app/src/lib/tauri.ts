@@ -203,6 +203,16 @@ function createMockState(): MockState {
           defaultNotebookId: 'nb-main',
         },
       },
+      providerRegistry: {
+        providers: [
+          { id: 'codex-cli', type: 'cli', enabled: true, capabilities: ['debate', 'cli-execution'] },
+          { id: 'gemini-cli', type: 'cli', enabled: true, capabilities: ['debate', 'cli-execution'] },
+          { id: 'claude-cli', type: 'cli', enabled: true, capabilities: ['debate', 'cli-execution'] },
+          { id: 'chatgpt-web', type: 'web', enabled: true, capabilities: ['debate', 'web-automation'] },
+          { id: 'gemini-web', type: 'web', enabled: true, capabilities: ['debate', 'web-automation'] },
+          { id: 'claude-web', type: 'web', enabled: true, capabilities: ['debate', 'web-automation'] },
+        ],
+      },
     },
   }
 }

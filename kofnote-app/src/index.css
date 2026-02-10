@@ -858,6 +858,32 @@ option {
   gap: 12px;
 }
 
+.provider-registry-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.provider-registry-card {
+  border-radius: 14px;
+  border: 1px solid rgba(134, 163, 236, 0.28);
+  background: rgba(12, 23, 44, 0.88);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.provider-registry-card h4 {
+  margin: 0;
+  font-size: 16px;
+  color: #ecf4ff;
+}
+
+.provider-enabled-field {
+  align-self: end;
+}
+
 .left-panel,
 .right-panel {
   min-height: 70vh;

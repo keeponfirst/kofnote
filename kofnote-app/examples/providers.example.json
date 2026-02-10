@@ -1,0 +1,40 @@
+{
+  "providers": [
+    {
+      "id": "codex-cli",
+      "type": "cli",
+      "enabled": true,
+      "capabilities": ["debate", "cli-execution", "structured-output"]
+    },
+    {
+      "id": "gemini-cli",
+      "type": "cli",
+      "enabled": true,
+      "capabilities": ["debate", "cli-execution", "structured-output"]
+    },
+    {
+      "id": "claude-cli",
+      "type": "cli",
+      "enabled": true,
+      "capabilities": ["debate", "cli-execution", "structured-output"]
+    },
+    {
+      "id": "chatgpt-web",
+      "type": "web",
+      "enabled": true,
+      "capabilities": ["debate", "web-automation", "structured-output"]
+    },
+    {
+      "id": "gemini-web",
+      "type": "web",
+      "enabled": true,
+      "capabilities": ["debate", "web-automation", "structured-output"]
+    },
+    {
+      "id": "claude-web",
+      "type": "web",
+      "enabled": true,
+      "capabilities": ["debate", "web-automation", "structured-output"]
+    }
+  ]
+}
