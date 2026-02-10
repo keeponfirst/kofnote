@@ -34,8 +34,10 @@ import {
   notebooklmListNotebooks,
   pullRecordsFromNotion,
   rebuildSearchIndex,
+  replayDebateMode,
   resolveCentralHome,
   runAiAnalysis,
+  runDebateMode,
   saveAppSettings,
   setClaudeApiKey,
   setGeminiApiKey,
@@ -50,6 +52,9 @@ import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, 
 import type {
   AiProvider,
   AppSettings,
+  DebateModeResponse,
+  DebateOutputType,
+  DebateReplayResponse,
   DashboardStats,
   HealthDiagnostics,
   HomeFingerprint,
@@ -94,6 +99,7 @@ type RecordFormState = {
 const LOCAL_STORAGE_KEY = 'kofnote.centralHome'
 const LOCAL_STORAGE_LANGUAGE_KEY = 'kofnote.uiLanguage'
 const DEFAULT_MODEL = 'gpt-4.1-mini'
+const DEBATE_ROLES = ['Proponent', 'Critic', 'Analyst', 'Synthesizer', 'Judge'] as const
 const RECORD_TYPES: RecordType[] = ['decision', 'worklog', 'idea', 'backlog', 'note']
 const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'logs', 'ai', 'integrations', 'settings', 'health']
 const TYPE_COLORS: Record<RecordType, string> = {
@@ -467,6 +473,21 @@ function App() {
   const [aiResult, setAiResult] = useState('')
   const [aiIncludeLogs, setAiIncludeLogs] = useState(true)
   const [aiMaxRecords, setAiMaxRecords] = useState(30)
+  const [debateProblem, setDebateProblem] = useState(
+    '在不影響既有功能的前提下，決定 KOF Note Debate Mode v0.1 的最佳實作策略。',
+  )
+  const [debateConstraintsText, setDebateConstraintsText] = useState(
+    'Local-first\n可 replay\n固定 5 角色 + 3 回合\n輸出可執行 Final Packet',
+  )
+  const [debateOutputType, setDebateOutputType] = useState<DebateOutputType>('decision')
+  const [debateProvider, setDebateProvider] = useState<AiProvider>('local')
+  const [debateModel, setDebateModel] = useState(DEFAULT_MODEL)
+  const [debateWritebackType, setDebateWritebackType] = useState<'decision' | 'worklog'>('decision')
+  const [debateMaxTurnSeconds, setDebateMaxTurnSeconds] = useState(35)
+  const [debateMaxTurnTokens, setDebateMaxTurnTokens] = useState(900)
+  const [debateRunId, setDebateRunId] = useState('')
+  const [debateResult, setDebateResult] = useState<DebateModeResponse | null>(null)
+  const [debateReplayResult, setDebateReplayResult] = useState<DebateReplayResponse | null>(null)
 
   const [appSettings, setAppSettings] = useState<AppSettings>({
     profiles: [],
@@ -1140,6 +1161,109 @@ function App() {
       pushNotice('success', t(`${result.provider} analysis completed.`, `${result.provider} 分析已完成。`))
     })
   }, [aiIncludeLogs, aiMaxRecords, aiModel, aiPrompt, aiProvider, centralHome, pushNotice, t, withBusy])
+
+  const handleRunDebate = useCallback(async () => {
+    if (!centralHome) {
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
+      return
+    }
+    if (!debateProblem.trim()) {
+      pushNotice('error', t('Debate problem cannot be empty.', '辯論問題不可為空。'))
+      return
+    }
+
+    const constraints = debateConstraintsText
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+
+    await withBusy(async () => {
+      const providerModel = debateProvider === 'local' ? 'local-heuristic-v1' : debateModel.trim() || DEFAULT_MODEL
+      const participants = DEBATE_ROLES.map((role) => ({
+        role,
+        modelProvider: debateProvider,
+        modelName: providerModel,
+      }))
+
+      const result = await runDebateMode({
+        centralHome,
+        request: {
+          problem: debateProblem.trim(),
+          constraints,
+          outputType: debateOutputType,
+          participants,
+          maxTurnSeconds: Math.max(5, Math.min(120, debateMaxTurnSeconds || 35)),
+          maxTurnTokens: Math.max(128, Math.min(4096, debateMaxTurnTokens || 900)),
+          writebackRecordType: debateWritebackType,
+        },
+      })
+
+      setDebateResult(result)
+      setDebateReplayResult(null)
+      setDebateRunId(result.runId)
+      setAiResult(JSON.stringify(result.finalPacket, null, 2))
+
+      if (result.degraded) {
+        pushNotice(
+          'info',
+          t(
+            `Debate completed in degraded mode. run=${result.runId}.`,
+            `辯論以降級模式完成。run=${result.runId}。`,
+          ),
+        )
+      } else {
+        pushNotice(
+          'success',
+          t(`Debate completed. run=${result.runId}.`, `辯論完成。run=${result.runId}。`),
+        )
+      }
+    })
+  }, [
+    centralHome,
+    debateConstraintsText,
+    debateMaxTurnSeconds,
+    debateMaxTurnTokens,
+    debateModel,
+    debateOutputType,
+    debateProblem,
+    debateProvider,
+    debateWritebackType,
+    pushNotice,
+    t,
+    withBusy,
+  ])
+
+  const handleReplayDebate = useCallback(async () => {
+    if (!centralHome) {
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
+      return
+    }
+    if (!debateRunId.trim()) {
+      pushNotice('error', t('Run ID cannot be empty.', 'Run ID 不可為空。'))
+      return
+    }
+
+    await withBusy(async () => {
+      const replay = await replayDebateMode({
+        centralHome,
+        runId: debateRunId.trim(),
+      })
+      setDebateReplayResult(replay)
+      setAiResult(JSON.stringify(replay.finalPacket, null, 2))
+
+      if (replay.consistency.issues.length > 0) {
+        pushNotice(
+          'info',
+          t(
+            `Replay loaded with ${replay.consistency.issues.length} consistency issue(s).`,
+            `Replay 已載入，含 ${replay.consistency.issues.length} 個一致性問題。`,
+          ),
+        )
+      } else {
+        pushNotice('success', t('Replay loaded.', 'Replay 已載入。'))
+      }
+    })
+  }, [centralHome, debateRunId, pushNotice, t, withBusy])
 
   const handleSaveApiKey = useCallback(async () => {
     if (!openaiKeyDraft.trim()) {
@@ -2454,6 +2578,9 @@ function App() {
   function renderAi() {
     const aiWordCount = aiResult.trim() ? aiResult.trim().split(/\s+/).filter(Boolean).length : 0
     const insights = extractAiInsights(aiResult)
+    const debateConsensus = debateResult?.finalPacket.consensus
+    const debateActions = debateResult?.finalPacket.nextActions ?? []
+    const replayIssues = debateReplayResult?.consistency.issues ?? []
     const cards: Array<{ id: 'summary' | 'risks' | 'actions'; title: string; items: string[]; empty: string }> = [
       {
         id: 'summary',
@@ -2500,6 +2627,135 @@ function App() {
               <small>{t('ai.hero.words')}</small>
             </div>
           </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head-inline">
+            <h3>{t('Debate Mode v0.1', '辯論模式 v0.1')}</h3>
+            <span className="muted">{t('Run fixed 5-role / 3-round protocol.', '執行固定 5 角色 / 3 回合流程。')}</span>
+          </div>
+
+          <div className="form-grid two-col-grid">
+            <label className="span-2">
+              {t('Problem', '問題')}
+              <textarea value={debateProblem} rows={4} onChange={(event) => setDebateProblem(event.target.value)} />
+            </label>
+
+            <label className="span-2">
+              {t('Constraints (line or comma separated)', '約束（每行或逗號分隔）')}
+              <textarea
+                value={debateConstraintsText}
+                rows={4}
+                onChange={(event) => setDebateConstraintsText(event.target.value)}
+              />
+            </label>
+
+            <label>
+              {t('Output Type', '輸出類型')}
+              <select
+                value={debateOutputType}
+                onChange={(event) => setDebateOutputType(event.target.value as DebateOutputType)}
+              >
+                <option value="decision">decision</option>
+                <option value="writing">writing</option>
+                <option value="architecture">architecture</option>
+                <option value="planning">planning</option>
+                <option value="evaluation">evaluation</option>
+              </select>
+            </label>
+
+            <label>
+              {t('Provider (all fixed roles)', 'Provider（套用到所有角色）')}
+              <select value={debateProvider} onChange={(event) => setDebateProvider(event.target.value as AiProvider)}>
+                <option value="local">local</option>
+                <option value="openai">openai</option>
+                <option value="gemini">gemini</option>
+                <option value="claude">claude</option>
+              </select>
+            </label>
+
+            <label>
+              {t('Model', '模型')}
+              <input value={debateModel} onChange={(event) => setDebateModel(event.target.value)} />
+            </label>
+
+            <label>
+              {t('Writeback Type', '寫回類型')}
+              <select
+                value={debateWritebackType}
+                onChange={(event) => setDebateWritebackType(event.target.value as 'decision' | 'worklog')}
+              >
+                <option value="decision">decision</option>
+                <option value="worklog">worklog</option>
+              </select>
+            </label>
+
+            <label>
+              {t('Max Turn Seconds', '單輪秒數上限')}
+              <input
+                type="number"
+                min={5}
+                max={120}
+                value={debateMaxTurnSeconds}
+                onChange={(event) => setDebateMaxTurnSeconds(Number(event.target.value) || 35)}
+              />
+            </label>
+
+            <label>
+              {t('Max Turn Tokens', '單輪 Token 上限')}
+              <input
+                type="number"
+                min={128}
+                max={4096}
+                value={debateMaxTurnTokens}
+                onChange={(event) => setDebateMaxTurnTokens(Number(event.target.value) || 900)}
+              />
+            </label>
+
+            <label className="span-2">
+              {t('Run ID (for replay)', 'Run ID（用於 replay）')}
+              <input value={debateRunId} onChange={(event) => setDebateRunId(event.target.value)} />
+            </label>
+          </div>
+
+          <div className="toolbar-row three-col">
+            <button type="button" onClick={() => void handleRunDebate()} disabled={busy}>
+              {t('Run Debate', '執行辯論')}
+            </button>
+            <button type="button" className="ghost-btn" onClick={() => void handleReplayDebate()} disabled={busy}>
+              {t('Replay Run', '重播 Run')}
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => navigator.clipboard.writeText(JSON.stringify(debateResult?.finalPacket ?? {}, null, 2))}
+            >
+              {t('Copy Final Packet', '複製 Final Packet')}
+            </button>
+          </div>
+
+          <div className="kpi-grid">
+            <div className="kpi-card">
+              <span>{t('Last Run', '最近 Run')}</span>
+              <strong>{debateResult?.runId || '-'}</strong>
+            </div>
+            <div className="kpi-card">
+              <span>{t('Consensus', '共識分數')}</span>
+              <strong>{debateConsensus ? debateConsensus.consensusScore.toFixed(3) : '-'}</strong>
+            </div>
+            <div className="kpi-card">
+              <span>{t('Confidence', '信心分數')}</span>
+              <strong>{debateConsensus ? debateConsensus.confidenceScore.toFixed(3) : '-'}</strong>
+            </div>
+            <div className="kpi-card">
+              <span>{t('Next Actions', '下一步行動')}</span>
+              <strong>{debateActions.length}</strong>
+            </div>
+          </div>
+
+          {replayIssues.length > 0 ? (
+            <pre className="json-preview">{JSON.stringify(replayIssues, null, 2)}</pre>
+          ) : null}
         </div>
 
         <div className="ai-layout">

@@ -38,6 +38,9 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 const SEARCH_DB_FILE: &str = "kofnote_search.sqlite";
 const DEFAULT_NOTEBOOKLM_COMMAND: &str = "uvx";
 const DEFAULT_NOTEBOOKLM_ARGS: [&str; 1] = ["kof-notebooklm-mcp"];
+const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
+const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,6 +356,278 @@ struct NotebookSummary {
 struct NotebookLmAskResult {
     answer: String,
     citations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateParticipantConfig {
+    role: Option<String>,
+    model_provider: Option<String>,
+    model_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateModeRequest {
+    problem: String,
+    #[serde(default)]
+    constraints: Vec<String>,
+    output_type: String,
+    #[serde(default)]
+    participants: Vec<DebateParticipantConfig>,
+    max_turn_seconds: Option<u64>,
+    max_turn_tokens: Option<u32>,
+    writeback_record_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebateModeResponse {
+    run_id: String,
+    mode: String,
+    state: String,
+    degraded: bool,
+    final_packet: DebateFinalPacket,
+    artifacts_root: String,
+    writeback_json_path: Option<String>,
+    error_codes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebateReplayConsistency {
+    files_complete: bool,
+    sql_indexed: bool,
+    issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebateReplayResponse {
+    run_id: String,
+    request: Value,
+    rounds: Vec<Value>,
+    consensus: Value,
+    final_packet: DebateFinalPacket,
+    writeback_record: Option<Record>,
+    consistency: DebateReplayConsistency,
+}
+
+#[derive(Debug, Clone)]
+struct DebateRuntimeParticipant {
+    role: DebateRole,
+    model_provider: String,
+    model_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct DebateNormalizedRequest {
+    problem: String,
+    constraints: Vec<String>,
+    output_type: String,
+    participants: Vec<DebateRuntimeParticipant>,
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+    writeback_record_type: Option<String>,
+    warning_codes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+enum DebateRole {
+    Proponent,
+    Critic,
+    Analyst,
+    Synthesizer,
+    Judge,
+}
+
+impl DebateRole {
+    fn all() -> [Self; 5] {
+        [
+            Self::Proponent,
+            Self::Critic,
+            Self::Analyst,
+            Self::Synthesizer,
+            Self::Judge,
+        ]
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Proponent => "Proponent",
+            Self::Critic => "Critic",
+            Self::Analyst => "Analyst",
+            Self::Synthesizer => "Synthesizer",
+            Self::Judge => "Judge",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+enum DebateRound {
+    Round1,
+    Round2,
+    Round3,
+}
+
+impl DebateRound {
+    fn all() -> [Self; 3] {
+        [Self::Round1, Self::Round2, Self::Round3]
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Round1 => "round-1",
+            Self::Round2 => "round-2",
+            Self::Round3 => "round-3",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+enum DebateState {
+    Intake,
+    Round1,
+    Round2,
+    Round3,
+    Consensus,
+    Judge,
+    Packetize,
+    Writeback,
+}
+
+impl DebateState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Intake => "Intake",
+            Self::Round1 => "Round1",
+            Self::Round2 => "Round2",
+            Self::Round3 => "Round3",
+            Self::Consensus => "Consensus",
+            Self::Judge => "Judge",
+            Self::Packetize => "Packetize",
+            Self::Writeback => "Writeback",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateChallenge {
+    source_role: String,
+    target_role: String,
+    question: String,
+    response: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateTurn {
+    role: String,
+    round: String,
+    model_provider: String,
+    model_name: String,
+    status: String,
+    claim: String,
+    rationale: String,
+    risks: Vec<String>,
+    challenges: Vec<DebateChallenge>,
+    revisions: Vec<String>,
+    target_role: Option<String>,
+    duration_ms: u128,
+    error_code: Option<String>,
+    error_message: Option<String>,
+    started_at: String,
+    finished_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateRoundArtifact {
+    round: String,
+    turns: Vec<DebateTurn>,
+    started_at: String,
+    finished_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebatePacketParticipant {
+    role: String,
+    model_provider: String,
+    model_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebatePacketConsensus {
+    consensus_score: f64,
+    confidence_score: f64,
+    key_agreements: Vec<String>,
+    key_disagreements: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateRejectedOption {
+    option: String,
+    reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateDecision {
+    selected_option: String,
+    why_selected: Vec<String>,
+    rejected_options: Vec<DebateRejectedOption>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateRisk {
+    risk: String,
+    severity: String,
+    mitigation: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateAction {
+    id: String,
+    action: String,
+    owner: String,
+    due: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateTrace {
+    round_refs: Vec<String>,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebatePacketTimestamps {
+    started_at: String,
+    finished_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DebateFinalPacket {
+    run_id: String,
+    mode: String,
+    problem: String,
+    constraints: Vec<String>,
+    output_type: String,
+    participants: Vec<DebatePacketParticipant>,
+    consensus: DebatePacketConsensus,
+    decision: DebateDecision,
+    risks: Vec<DebateRisk>,
+    next_actions: Vec<DebateAction>,
+    trace: DebateTrace,
+    timestamps: DebatePacketTimestamps,
 }
 
 #[tauri::command]
@@ -1153,6 +1428,18 @@ fn notebooklm_ask(
     Ok(NotebookLmAskResult { answer, citations })
 }
 
+#[tauri::command]
+fn run_debate_mode(central_home: String, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
+    let home = normalized_home(&central_home)?;
+    run_debate_mode_internal(&home, request)
+}
+
+#[tauri::command]
+fn replay_debate_mode(central_home: String, run_id: String) -> Result<DebateReplayResponse, String> {
+    let home = normalized_home(&central_home)?;
+    replay_debate_mode_internal(&home, run_id.trim())
+}
+
 fn normalized_home(input: &str) -> Result<PathBuf, String> {
     if input.trim().is_empty() {
         return Err("Central Home path is required".to_string());
@@ -1739,6 +2026,1564 @@ fn run_openai_analysis(
     Ok(output)
 }
 
+fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
+    let normalized = normalize_debate_request(request)?;
+    ensure_structure(central_home).map_err(|error| error.to_string())?;
+
+    let run_id = generate_debate_run_id();
+    let run_root = central_home.join("records").join("debates").join(&run_id);
+    let rounds_root = run_root.join("rounds");
+    fs::create_dir_all(&rounds_root).map_err(|error| error.to_string())?;
+
+    let started_at = Local::now().to_rfc3339();
+    let mut state: Option<DebateState> = None;
+    let mut error_codes = normalized.warning_codes.clone();
+    let mut degraded = false;
+
+    advance_debate_state(&mut state, DebateState::Intake)?;
+
+    let request_json_path = run_root.join("request.json");
+    write_json_artifact(
+        &request_json_path,
+        &json!({
+            "runId": run_id,
+            "problem": normalized.problem,
+            "constraints": normalized.constraints,
+            "outputType": normalized.output_type,
+            "participants": normalized
+                .participants
+                .iter()
+                .map(|item| {
+                    json!({
+                        "role": item.role.as_str(),
+                        "modelProvider": item.model_provider,
+                        "modelName": item.model_name,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "maxTurnSeconds": normalized.max_turn_seconds,
+            "maxTurnTokens": normalized.max_turn_tokens,
+            "warnings": normalized.warning_codes,
+            "startedAt": started_at,
+        }),
+    )?;
+
+    let mut rounds: Vec<DebateRoundArtifact> = Vec::new();
+    for round in DebateRound::all() {
+        let next_state = match round {
+            DebateRound::Round1 => DebateState::Round1,
+            DebateRound::Round2 => DebateState::Round2,
+            DebateRound::Round3 => DebateState::Round3,
+        };
+        advance_debate_state(&mut state, next_state)?;
+
+        let round_started = Local::now().to_rfc3339();
+        let mut turns = Vec::new();
+
+        for participant in &normalized.participants {
+            let target_role = if round == DebateRound::Round2 {
+                Some(debate_round2_target(participant.role))
+            } else {
+                None
+            };
+            let turn = execute_debate_turn(
+                participant,
+                round,
+                target_role,
+                &normalized,
+                &rounds,
+                normalized.max_turn_seconds,
+                normalized.max_turn_tokens,
+            );
+
+            if turn.status != "ok" {
+                degraded = true;
+                if let Some(code) = &turn.error_code {
+                    error_codes.push(code.clone());
+                }
+            }
+            turns.push(turn);
+        }
+
+        let round_artifact = DebateRoundArtifact {
+            round: round.as_str().to_string(),
+            turns,
+            started_at: round_started,
+            finished_at: Local::now().to_rfc3339(),
+        };
+        write_json_artifact(
+            &rounds_root.join(format!("{}.json", round.as_str())),
+            &round_artifact,
+        )?;
+        rounds.push(round_artifact);
+    }
+
+    advance_debate_state(&mut state, DebateState::Consensus)?;
+    let consensus = build_debate_consensus(&rounds, &error_codes);
+    write_json_artifact(&run_root.join("consensus.json"), &consensus)?;
+
+    advance_debate_state(&mut state, DebateState::Judge)?;
+    let decision = build_debate_decision(&normalized, &rounds);
+    let risks = build_debate_risks(&rounds);
+    let next_actions = build_debate_actions(&normalized.output_type, &decision, &risks);
+
+    advance_debate_state(&mut state, DebateState::Packetize)?;
+    let participants = normalized
+        .participants
+        .iter()
+        .map(|item| DebatePacketParticipant {
+            role: item.role.as_str().to_string(),
+            model_provider: item.model_provider.clone(),
+            model_name: item.model_name.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut final_packet = DebateFinalPacket {
+        run_id: run_id.clone(),
+        mode: "debate-v0.1".to_string(),
+        problem: normalized.problem.clone(),
+        constraints: normalized.constraints.clone(),
+        output_type: normalized.output_type.clone(),
+        participants,
+        consensus,
+        decision,
+        risks,
+        next_actions,
+        trace: DebateTrace {
+            round_refs: vec![
+                "round-1".to_string(),
+                "round-2".to_string(),
+                "round-3".to_string(),
+            ],
+            evidence_refs: vec![
+                request_json_path.to_string_lossy().to_string(),
+                run_root.join("consensus.json").to_string_lossy().to_string(),
+            ],
+        },
+        timestamps: DebatePacketTimestamps {
+            started_at: started_at.clone(),
+            finished_at: Local::now().to_rfc3339(),
+        },
+    };
+    validate_final_packet(&final_packet)?;
+
+    let final_packet_json_path = run_root.join("final-packet.json");
+    let final_packet_md_path = run_root.join("final-packet.md");
+    write_json_artifact(&final_packet_json_path, &final_packet)?;
+    write_atomic(&final_packet_md_path, render_debate_packet_markdown(&final_packet).as_bytes())
+        .map_err(|error| error.to_string())?;
+
+    advance_debate_state(&mut state, DebateState::Writeback)?;
+    let writeback_record = writeback_debate_result(central_home, &normalized, &final_packet)?;
+    let writeback_json_path = writeback_record.json_path.clone();
+
+    if let Some(path) = &writeback_json_path {
+        final_packet
+            .trace
+            .evidence_refs
+            .push(format!("writeback:{path}"));
+    }
+    final_packet.timestamps.finished_at = Local::now().to_rfc3339();
+    validate_final_packet(&final_packet)?;
+
+    write_json_artifact(&final_packet_json_path, &final_packet)?;
+    write_atomic(&final_packet_md_path, render_debate_packet_markdown(&final_packet).as_bytes())
+        .map_err(|error| error.to_string())?;
+
+    upsert_debate_index(
+        central_home,
+        &final_packet,
+        &rounds,
+        degraded,
+        &run_root,
+        writeback_json_path.clone(),
+    )?;
+
+    Ok(DebateModeResponse {
+        run_id,
+        mode: "debate-v0.1".to_string(),
+        state: state.unwrap_or(DebateState::Intake).as_str().to_string(),
+        degraded,
+        final_packet,
+        artifacts_root: run_root.to_string_lossy().to_string(),
+        writeback_json_path,
+        error_codes: dedup_non_empty(error_codes),
+    })
+}
+
+fn replay_debate_mode_internal(central_home: &Path, run_id: &str) -> Result<DebateReplayResponse, String> {
+    if run_id.trim().is_empty() {
+        return Err(debate_error("DEBATE_ERR_INPUT", "run_id is required"));
+    }
+
+    let run_root = central_home.join("records").join("debates").join(run_id.trim());
+    if !run_root.exists() {
+        return Err(debate_error(
+            "DEBATE_ERR_NOT_FOUND",
+            &format!("Debate run not found: {}", run_root.to_string_lossy()),
+        ));
+    }
+
+    let request_path = run_root.join("request.json");
+    let consensus_path = run_root.join("consensus.json");
+    let final_path = run_root.join("final-packet.json");
+    let rounds_root = run_root.join("rounds");
+
+    let request_value = read_json_value(&request_path)?;
+    let consensus_value = read_json_value(&consensus_path)?;
+    let final_value = read_json_value(&final_path)?;
+    let final_packet: DebateFinalPacket =
+        serde_json::from_value(final_value.clone()).map_err(|error| error.to_string())?;
+
+    let mut rounds = Vec::new();
+    let mut issues = Vec::new();
+
+    for round in DebateRound::all() {
+        let path = rounds_root.join(format!("{}.json", round.as_str()));
+        if !path.exists() {
+            issues.push(format!("Missing round artifact: {}", path.to_string_lossy()));
+            continue;
+        }
+        rounds.push(read_json_value(&path)?);
+    }
+
+    let mut writeback_record: Option<Record> = None;
+    for evidence in &final_packet.trace.evidence_refs {
+        if let Some(path) = evidence.strip_prefix("writeback:") {
+            if let Ok(record) = load_record_by_json_path(central_home, path) {
+                writeback_record = Some(record);
+            } else {
+                issues.push(format!("Writeback reference missing: {path}"));
+            }
+        }
+    }
+
+    let indexed_turns = count_debate_turns(central_home, run_id)?;
+    let indexed_actions = count_debate_actions(central_home, run_id)?;
+    let expected_turns = rounds
+        .iter()
+        .filter_map(|item| item.get("turns").and_then(Value::as_array))
+        .map(|items| items.len())
+        .sum::<usize>();
+    let expected_actions = final_packet.next_actions.len();
+
+    if indexed_turns != expected_turns {
+        issues.push(format!(
+            "Turn count mismatch: file={expected_turns}, sqlite={indexed_turns}"
+        ));
+    }
+    if indexed_actions != expected_actions {
+        issues.push(format!(
+            "Action count mismatch: file={expected_actions}, sqlite={indexed_actions}"
+        ));
+    }
+
+    let files_complete = request_path.exists()
+        && consensus_path.exists()
+        && final_path.exists()
+        && rounds.len() == DebateRound::all().len();
+    let sql_indexed = indexed_turns > 0 || indexed_actions > 0;
+
+    Ok(DebateReplayResponse {
+        run_id: run_id.trim().to_string(),
+        request: request_value,
+        rounds,
+        consensus: consensus_value,
+        final_packet,
+        writeback_record,
+        consistency: DebateReplayConsistency {
+            files_complete,
+            sql_indexed,
+            issues,
+        },
+    })
+}
+
+fn normalize_debate_request(request: DebateModeRequest) -> Result<DebateNormalizedRequest, String> {
+    let problem = request.problem.trim().to_string();
+    if problem.is_empty() {
+        return Err(debate_error("DEBATE_ERR_INPUT", "Problem cannot be empty"));
+    }
+
+    let output_type = normalize_debate_output_type(&request.output_type)?;
+    let max_turn_seconds = request.max_turn_seconds.unwrap_or(35).clamp(5, 120);
+    let max_turn_tokens = request.max_turn_tokens.unwrap_or(900).clamp(128, 4096);
+
+    let mut warning_codes = Vec::new();
+    let mut provided = HashMap::new();
+    for config in request.participants {
+        let role_name = config.role.unwrap_or_default();
+        let provider_input = config
+            .model_provider
+            .unwrap_or_else(|| "local".to_string());
+        let model_name_input = config.model_name.unwrap_or_default();
+        if let Some(role) = parse_debate_role(&role_name) {
+            let provider = normalize_debate_provider(provider_input.trim());
+            if provider != provider_input.trim().to_lowercase() {
+                warning_codes.push("DEBATE_WARN_PROVIDER_NORMALIZED".to_string());
+            }
+            provided.insert(
+                role,
+                DebateRuntimeParticipant {
+                    role,
+                    model_provider: provider.clone(),
+                    model_name: normalize_debate_model_name(&provider, &model_name_input),
+                },
+            );
+        } else if !role_name.trim().is_empty() {
+            warning_codes.push("DEBATE_WARN_UNKNOWN_ROLE_IGNORED".to_string());
+        }
+    }
+
+    let mut participants = Vec::new();
+    for role in DebateRole::all() {
+        if let Some(item) = provided.remove(&role) {
+            participants.push(item);
+        } else {
+            participants.push(DebateRuntimeParticipant {
+                role,
+                model_provider: "local".to_string(),
+                model_name: normalize_debate_model_name("local", ""),
+            });
+        }
+    }
+
+    let constraints = request
+        .constraints
+        .iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+
+    Ok(DebateNormalizedRequest {
+        problem,
+        constraints,
+        output_type,
+        participants,
+        max_turn_seconds,
+        max_turn_tokens,
+        writeback_record_type: request
+            .writeback_record_type
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty()),
+        warning_codes: dedup_non_empty(warning_codes),
+    })
+}
+
+fn normalize_debate_output_type(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "decision" | "writing" | "architecture" | "planning" | "evaluation"
+    ) {
+        Ok(normalized)
+    } else {
+        Err(debate_error(
+            "DEBATE_ERR_INPUT",
+            "output_type must be one of: decision|writing|architecture|planning|evaluation",
+        ))
+    }
+}
+
+fn normalize_debate_provider(value: &str) -> String {
+    let normalized = value.trim().to_lowercase();
+    match normalized.as_str() {
+        "openai" | "gemini" | "claude" | "local" => normalized,
+        _ => "local".to_string(),
+    }
+}
+
+fn normalize_debate_model_name(provider: &str, model_name: &str) -> String {
+    let trimmed = model_name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    match provider {
+        "openai" => "gpt-4.1-mini".to_string(),
+        "gemini" => "gemini-2.0-flash".to_string(),
+        "claude" => "claude-3-5-sonnet-latest".to_string(),
+        _ => "local-heuristic-v1".to_string(),
+    }
+}
+
+fn parse_debate_role(value: &str) -> Option<DebateRole> {
+    match value.trim().to_lowercase().as_str() {
+        "proponent" => Some(DebateRole::Proponent),
+        "critic" => Some(DebateRole::Critic),
+        "analyst" => Some(DebateRole::Analyst),
+        "synthesizer" => Some(DebateRole::Synthesizer),
+        "judge" => Some(DebateRole::Judge),
+        _ => None,
+    }
+}
+
+fn validate_debate_transition(current: Option<DebateState>, next: DebateState) -> bool {
+    matches!(
+        (current, next),
+        (None, DebateState::Intake)
+            | (Some(DebateState::Intake), DebateState::Round1)
+            | (Some(DebateState::Round1), DebateState::Round2)
+            | (Some(DebateState::Round2), DebateState::Round3)
+            | (Some(DebateState::Round3), DebateState::Consensus)
+            | (Some(DebateState::Consensus), DebateState::Judge)
+            | (Some(DebateState::Judge), DebateState::Packetize)
+            | (Some(DebateState::Packetize), DebateState::Writeback)
+    )
+}
+
+fn advance_debate_state(current: &mut Option<DebateState>, next: DebateState) -> Result<(), String> {
+    if validate_debate_transition(*current, next) {
+        *current = Some(next);
+        Ok(())
+    } else {
+        Err(debate_error(
+            "DEBATE_ERR_STATE",
+            &format!(
+                "Invalid transition: {:?} -> {}",
+                current,
+                next.as_str()
+            ),
+        ))
+    }
+}
+
+fn debate_round2_target(role: DebateRole) -> DebateRole {
+    match role {
+        DebateRole::Proponent => DebateRole::Critic,
+        DebateRole::Critic => DebateRole::Proponent,
+        DebateRole::Analyst => DebateRole::Proponent,
+        DebateRole::Synthesizer => DebateRole::Critic,
+        DebateRole::Judge => DebateRole::Synthesizer,
+    }
+}
+
+fn execute_debate_turn(
+    participant: &DebateRuntimeParticipant,
+    round: DebateRound,
+    target_role: Option<DebateRole>,
+    request: &DebateNormalizedRequest,
+    previous_rounds: &[DebateRoundArtifact],
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+) -> DebateTurn {
+    let started_at = Local::now().to_rfc3339();
+    let timer = Instant::now();
+
+    let result = if participant.model_provider == "local" {
+        Ok(generate_local_debate_text(
+            participant.role,
+            round,
+            target_role,
+            request,
+            previous_rounds,
+        ))
+    } else {
+        let prompt = build_debate_provider_prompt(participant.role, round, target_role, request, previous_rounds);
+        run_debate_provider_text(
+            &participant.model_provider,
+            &participant.model_name,
+            &prompt,
+            max_turn_seconds,
+            max_turn_tokens,
+        )
+    };
+
+    match result {
+        Ok(text) => {
+            let claim = summarize_text_line(&text, 180);
+            let mut rationale = text.trim().to_string();
+            if rationale.is_empty() {
+                rationale = "No rationale returned.".to_string();
+            }
+
+            let risks = extract_risk_lines(&text);
+            let challenges = if round == DebateRound::Round2 {
+                build_round2_challenges(participant.role, target_role, &text, previous_rounds)
+            } else {
+                Vec::new()
+            };
+            let revisions = if round == DebateRound::Round3 {
+                build_round3_revisions(participant.role, &text, previous_rounds)
+            } else {
+                Vec::new()
+            };
+
+            DebateTurn {
+                role: participant.role.as_str().to_string(),
+                round: round.as_str().to_string(),
+                model_provider: participant.model_provider.clone(),
+                model_name: participant.model_name.clone(),
+                status: "ok".to_string(),
+                claim,
+                rationale,
+                risks,
+                challenges,
+                revisions,
+                target_role: target_role.map(|item| item.as_str().to_string()),
+                duration_ms: timer.elapsed().as_millis(),
+                error_code: None,
+                error_message: None,
+                started_at,
+                finished_at: Local::now().to_rfc3339(),
+            }
+        }
+        Err(error) => {
+            let (code, message) = parse_debate_error(&error);
+            DebateTurn {
+                role: participant.role.as_str().to_string(),
+                round: round.as_str().to_string(),
+                model_provider: participant.model_provider.clone(),
+                model_name: participant.model_name.clone(),
+                status: "failed".to_string(),
+                claim: String::new(),
+                rationale: String::new(),
+                risks: Vec::new(),
+                challenges: Vec::new(),
+                revisions: Vec::new(),
+                target_role: target_role.map(|item| item.as_str().to_string()),
+                duration_ms: timer.elapsed().as_millis(),
+                error_code: code,
+                error_message: Some(message),
+                started_at,
+                finished_at: Local::now().to_rfc3339(),
+            }
+        }
+    }
+}
+
+fn build_debate_provider_prompt(
+    role: DebateRole,
+    round: DebateRound,
+    target_role: Option<DebateRole>,
+    request: &DebateNormalizedRequest,
+    previous_rounds: &[DebateRoundArtifact],
+) -> String {
+    let constraints = if request.constraints.is_empty() {
+        "- none".to_string()
+    } else {
+        request
+            .constraints
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut context = Vec::new();
+    for artifact in previous_rounds {
+        for turn in &artifact.turns {
+            if turn.status == "ok" {
+                context.push(format!(
+                    "{} / {}: {}",
+                    artifact.round,
+                    turn.role,
+                    summarize_text_line(&turn.claim, 120)
+                ));
+            }
+        }
+    }
+    let prior_context = if context.is_empty() {
+        "none".to_string()
+    } else {
+        context.join("\n")
+    };
+
+    let round_instruction = match round {
+        DebateRound::Round1 => "Provide opening position with claim, rationale, and key risks.",
+        DebateRound::Round2 => "Challenge another role's position with concrete questions and weak points.",
+        DebateRound::Round3 => "Revise your position based on cross-examination and provide final stance.",
+    };
+
+    let target = target_role
+        .map(|item| item.as_str().to_string())
+        .unwrap_or_else(|| "-".to_string());
+
+    format!(
+        "You are role {role}. Problem: {problem}\nOutput type: {output_type}\nConstraints:\n{constraints}\nTarget role: {target}\nRound instruction: {round_instruction}\nPrior context:\n{prior_context}\n\nReturn concise markdown in this shape:\nClaim: ...\nRationale: ...\nRisks: ...",
+        role = role.as_str(),
+        problem = request.problem,
+        output_type = request.output_type,
+    )
+}
+
+fn run_debate_provider_text(
+    provider: &str,
+    model: &str,
+    prompt: &str,
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+) -> Result<String, String> {
+    match provider {
+        "openai" => run_openai_text_completion(model, prompt, max_turn_seconds, max_turn_tokens)
+            .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_OPENAI", &error)),
+        "gemini" => run_gemini_text_completion(model, prompt, max_turn_seconds, max_turn_tokens)
+            .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_GEMINI", &error)),
+        "claude" => run_claude_text_completion(model, prompt, max_turn_seconds, max_turn_tokens)
+            .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_CLAUDE", &error)),
+        "local" => Ok(prompt.to_string()),
+        _ => Err(debate_error(
+            "DEBATE_ERR_PROVIDER_UNSUPPORTED",
+            &format!("Unsupported provider: {provider}"),
+        )),
+    }
+}
+
+fn run_openai_text_completion(
+    model: &str,
+    prompt: &str,
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+) -> Result<String, String> {
+    let api_key = resolve_api_key(None)?;
+    let payload = json!({
+        "model": model,
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": prompt,
+            }]
+        }],
+        "max_output_tokens": max_turn_tokens,
+    });
+
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(max_turn_seconds))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let response = client
+        .post(OPENAI_RESPONSES_URL)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .map_err(|error| error.to_string())?;
+
+    let status = response.status();
+    let body = response.text().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("OpenAI API {}: {body}", status.as_u16()));
+    }
+
+    let value: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let text = extract_openai_output_text(&value);
+    if text.trim().is_empty() {
+        return Err("OpenAI response is empty".to_string());
+    }
+    Ok(text)
+}
+
+fn run_gemini_text_completion(
+    model: &str,
+    prompt: &str,
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+) -> Result<String, String> {
+    let api_key = resolve_gemini_api_key(None)?;
+    let url = format!("{GEMINI_API_BASE_URL}/{model}:generateContent?key={api_key}");
+    let payload = json!({
+        "contents": [{
+            "parts": [{
+                "text": prompt
+            }]
+        }],
+        "generationConfig": {
+            "maxOutputTokens": max_turn_tokens
+        }
+    });
+
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(max_turn_seconds))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .map_err(|error| error.to_string())?;
+
+    let status = response.status();
+    let body = response.text().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("Gemini API {}: {body}", status.as_u16()));
+    }
+
+    let value: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let text = value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("content"))
+        .and_then(|content| content.get("parts"))
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    if text.trim().is_empty() {
+        return Err("Gemini response is empty".to_string());
+    }
+    Ok(text)
+}
+
+fn run_claude_text_completion(
+    model: &str,
+    prompt: &str,
+    max_turn_seconds: u64,
+    max_turn_tokens: u32,
+) -> Result<String, String> {
+    let api_key = resolve_claude_api_key(None)?;
+    let payload = json!({
+        "model": model,
+        "max_tokens": max_turn_tokens,
+        "messages": [{
+            "role": "user",
+            "content": prompt
+        }]
+    });
+
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(max_turn_seconds))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let response = client
+        .post(CLAUDE_API_URL)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_API_VERSION)
+        .header("content-type", "application/json")
+        .json(&payload)
+        .send()
+        .map_err(|error| error.to_string())?;
+
+    let status = response.status();
+    let body = response.text().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("Claude API {}: {body}", status.as_u16()));
+    }
+
+    let value: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let text = value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    if text.trim().is_empty() {
+        return Err("Claude response is empty".to_string());
+    }
+    Ok(text)
+}
+
+fn generate_local_debate_text(
+    role: DebateRole,
+    round: DebateRound,
+    target_role: Option<DebateRole>,
+    request: &DebateNormalizedRequest,
+    previous_rounds: &[DebateRoundArtifact],
+) -> String {
+    let focus = summarize_text_line(&request.problem, 80);
+    let constraints = if request.constraints.is_empty() {
+        "no explicit constraints".to_string()
+    } else {
+        request.constraints.join("; ")
+    };
+
+    match round {
+        DebateRound::Round1 => format!(
+            "Claim: {} perspective recommends a practical path for {}.\nRationale: Prioritize local-first traceability and fast operator control under {}.\nRisks: hidden assumptions may survive without explicit cross-check.",
+            role.as_str(),
+            focus,
+            constraints
+        ),
+        DebateRound::Round2 => format!(
+            "Claim: {} challenges {} on evidence depth.\nRationale: Ask for concrete trade-offs, not generic statements.\nRisks: without challenge quality, consensus may converge too early.",
+            role.as_str(),
+            target_role.map(|item| item.as_str()).unwrap_or("peer")
+        ),
+        DebateRound::Round3 => {
+            let prior = find_turn(previous_rounds, DebateRound::Round2, role)
+                .map(|item| summarize_text_line(&item.claim, 120))
+                .unwrap_or_else(|| "cross-examination feedback".to_string());
+            format!(
+                "Claim: {} revised position keeps local-first execution and adds guardrails.\nRationale: Revision incorporates '{}'.\nRisks: operational overhead increases if writeback contracts are not automated.",
+                role.as_str(),
+                prior
+            )
+        }
+    }
+}
+
+fn build_round2_challenges(
+    role: DebateRole,
+    target_role: Option<DebateRole>,
+    text: &str,
+    previous_rounds: &[DebateRoundArtifact],
+) -> Vec<DebateChallenge> {
+    let Some(target) = target_role else {
+        return Vec::new();
+    };
+
+    let target_claim = find_turn(previous_rounds, DebateRound::Round1, target)
+        .map(|item| summarize_text_line(&item.claim, 140))
+        .unwrap_or_else(|| "missing target claim".to_string());
+    let question = format!(
+        "How does {} defend this claim under failure conditions: {}",
+        target.as_str(),
+        target_claim
+    );
+
+    vec![DebateChallenge {
+        source_role: role.as_str().to_string(),
+        target_role: target.as_str().to_string(),
+        question,
+        response: summarize_text_line(text, 180),
+    }]
+}
+
+fn build_round3_revisions(role: DebateRole, text: &str, previous_rounds: &[DebateRoundArtifact]) -> Vec<String> {
+    let challenge_ref = find_turn(previous_rounds, DebateRound::Round2, role)
+        .and_then(|item| item.challenges.first())
+        .map(|item| format!("Addressed challenge to {}", item.target_role))
+        .unwrap_or_else(|| "No challenge data available".to_string());
+
+    dedup_non_empty(vec![
+        challenge_ref,
+        summarize_text_line(text, 180),
+        "Added explicit risk mitigation and execution checkpoints.".to_string(),
+    ])
+}
+
+fn build_debate_consensus(rounds: &[DebateRoundArtifact], error_codes: &[String]) -> DebatePacketConsensus {
+    let total_turns = rounds.iter().map(|round| round.turns.len()).sum::<usize>();
+    let ok_turns = rounds
+        .iter()
+        .flat_map(|round| round.turns.iter())
+        .filter(|turn| turn.status == "ok")
+        .count();
+    let failure_count = total_turns.saturating_sub(ok_turns);
+
+    let base_score = if total_turns == 0 {
+        0.0
+    } else {
+        ok_turns as f64 / total_turns as f64
+    };
+    let confidence = (base_score - (failure_count as f64 * 0.03)).clamp(0.0, 1.0);
+
+    let agreements = dedup_non_empty(
+        rounds
+            .iter()
+            .flat_map(|round| round.turns.iter())
+            .filter(|turn| turn.status == "ok")
+            .map(|turn| summarize_text_line(&turn.claim, 120))
+            .take(6)
+            .collect::<Vec<_>>(),
+    );
+
+    let mut disagreements = rounds
+        .iter()
+        .flat_map(|round| round.turns.iter())
+        .filter_map(|turn| turn.error_message.as_ref())
+        .map(|item| summarize_text_line(item, 120))
+        .collect::<Vec<_>>();
+
+    if disagreements.is_empty() {
+        disagreements = rounds
+            .iter()
+            .flat_map(|round| round.turns.iter())
+            .filter(|turn| turn.role == "Critic")
+            .flat_map(|turn| turn.risks.clone())
+            .take(4)
+            .collect::<Vec<_>>();
+    }
+
+    for code in error_codes {
+        disagreements.push(format!("Observed warning/error code: {code}"));
+    }
+
+    DebatePacketConsensus {
+        consensus_score: round_score(base_score),
+        confidence_score: round_score(confidence),
+        key_agreements: if agreements.is_empty() {
+            vec!["Participants aligned on delivering an executable local-first packet.".to_string()]
+        } else {
+            agreements
+        },
+        key_disagreements: if disagreements.is_empty() {
+            vec!["No major disagreement captured.".to_string()]
+        } else {
+            dedup_non_empty(disagreements)
+        },
+    }
+}
+
+fn build_debate_decision(request: &DebateNormalizedRequest, rounds: &[DebateRoundArtifact]) -> DebateDecision {
+    let selected_option = find_turn(rounds, DebateRound::Round3, DebateRole::Synthesizer)
+        .or_else(|| find_turn(rounds, DebateRound::Round3, DebateRole::Proponent))
+        .map(|turn| summarize_text_line(&turn.claim, 140))
+        .unwrap_or_else(|| format!("Adopt a constrained {} execution path.", request.output_type));
+
+    let why_selected = dedup_non_empty(vec![
+        find_turn(rounds, DebateRound::Round3, DebateRole::Synthesizer)
+            .map(|turn| summarize_text_line(&turn.rationale, 180))
+            .unwrap_or_default(),
+        find_turn(rounds, DebateRound::Round3, DebateRole::Analyst)
+            .map(|turn| summarize_text_line(&turn.rationale, 180))
+            .unwrap_or_default(),
+        "Chosen for replayability, explicit risk handling, and direct actionability.".to_string(),
+    ]);
+
+    let rejected_options = dedup_non_empty(
+        rounds
+            .iter()
+            .flat_map(|round| round.turns.iter())
+            .filter(|turn| turn.role == DebateRole::Critic.as_str())
+            .map(|turn| summarize_text_line(&turn.claim, 120))
+            .take(2)
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .enumerate()
+    .map(|(index, option)| DebateRejectedOption {
+        option,
+        reason: format!("Rejected by judge due to unresolved trade-offs (#{}).", index + 1),
+    })
+    .collect::<Vec<_>>();
+
+    DebateDecision {
+        selected_option,
+        why_selected: if why_selected.is_empty() {
+            vec!["No explicit rationale captured.".to_string()]
+        } else {
+            why_selected
+        },
+        rejected_options,
+    }
+}
+
+fn build_debate_risks(rounds: &[DebateRoundArtifact]) -> Vec<DebateRisk> {
+    let mut raw_risks = rounds
+        .iter()
+        .flat_map(|round| round.turns.iter())
+        .flat_map(|turn| turn.risks.clone())
+        .collect::<Vec<_>>();
+    if raw_risks.is_empty() {
+        raw_risks = vec![
+            "Consensus quality may drop when provider failures cluster.".to_string(),
+            "Writeback trace could break if local storage is unavailable.".to_string(),
+        ];
+    }
+
+    dedup_non_empty(raw_risks)
+        .into_iter()
+        .take(5)
+        .map(|risk| DebateRisk {
+            severity: classify_risk_severity(&risk).to_string(),
+            mitigation: format!("Track via run replay and add explicit check for: {}", summarize_text_line(&risk, 80)),
+            risk,
+        })
+        .collect()
+}
+
+fn build_debate_actions(
+    output_type: &str,
+    decision: &DebateDecision,
+    risks: &[DebateRisk],
+) -> Vec<DebateAction> {
+    let risk_focus = risks
+        .first()
+        .map(|item| summarize_text_line(&item.risk, 100))
+        .unwrap_or_else(|| "No critical risk recorded".to_string());
+
+    vec![
+        DebateAction {
+            id: "A1".to_string(),
+            action: format!(
+                "Execute selected option for {}: {}",
+                output_type,
+                summarize_text_line(&decision.selected_option, 110)
+            ),
+            owner: "me".to_string(),
+            due: due_after_days(1),
+        },
+        DebateAction {
+            id: "A2".to_string(),
+            action: format!("Mitigate primary risk: {risk_focus}"),
+            owner: "me".to_string(),
+            due: due_after_days(3),
+        },
+        DebateAction {
+            id: "A3".to_string(),
+            action: "Review execution result and run replay audit.".to_string(),
+            owner: "me".to_string(),
+            due: due_after_days(7),
+        },
+    ]
+}
+
+fn validate_final_packet(packet: &DebateFinalPacket) -> Result<(), String> {
+    if packet.run_id.trim().is_empty() {
+        return Err(debate_error("DEBATE_ERR_PACKET", "run_id is required"));
+    }
+    if packet.problem.trim().is_empty() {
+        return Err(debate_error("DEBATE_ERR_PACKET", "problem is required"));
+    }
+    normalize_debate_output_type(&packet.output_type)?;
+
+    if packet.participants.len() != DebateRole::all().len() {
+        return Err(debate_error(
+            "DEBATE_ERR_PACKET",
+            "participants must contain exactly 5 fixed roles",
+        ));
+    }
+
+    let mut role_seen = HashSet::new();
+    for participant in &packet.participants {
+        let Some(role) = parse_debate_role(&participant.role) else {
+            return Err(debate_error(
+                "DEBATE_ERR_PACKET",
+                "participant role contains invalid value",
+            ));
+        };
+        role_seen.insert(role);
+        if participant.model_provider.trim().is_empty() || participant.model_name.trim().is_empty() {
+            return Err(debate_error(
+                "DEBATE_ERR_PACKET",
+                "participant provider/model cannot be empty",
+            ));
+        }
+    }
+    if role_seen.len() != DebateRole::all().len() {
+        return Err(debate_error(
+            "DEBATE_ERR_PACKET",
+            "participant roles must be unique and complete",
+        ));
+    }
+
+    if !(0.0..=1.0).contains(&packet.consensus.consensus_score)
+        || !(0.0..=1.0).contains(&packet.consensus.confidence_score)
+    {
+        return Err(debate_error(
+            "DEBATE_ERR_PACKET",
+            "consensus/confidence score must be in [0,1]",
+        ));
+    }
+
+    if packet.next_actions.is_empty() {
+        return Err(debate_error(
+            "DEBATE_ERR_PACKET",
+            "next_actions cannot be empty",
+        ));
+    }
+    for action in &packet.next_actions {
+        if action.id.trim().is_empty()
+            || action.action.trim().is_empty()
+            || action.owner.trim().is_empty()
+            || NaiveDate::parse_from_str(action.due.trim(), "%Y-%m-%d").is_err()
+        {
+            return Err(debate_error(
+                "DEBATE_ERR_PACKET",
+                "next_actions contain invalid fields",
+            ));
+        }
+    }
+
+    if packet.timestamps.started_at.trim().is_empty() || packet.timestamps.finished_at.trim().is_empty() {
+        return Err(debate_error(
+            "DEBATE_ERR_PACKET",
+            "timestamps.started_at/finished_at are required",
+        ));
+    }
+
+    Ok(())
+}
+
+fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    write_atomic(path, &bytes).map_err(|error| error.to_string())
+}
+
+fn render_debate_packet_markdown(packet: &DebateFinalPacket) -> String {
+    let mut lines = vec![
+        format!("# Debate Final Packet - {}", packet.run_id),
+        String::new(),
+        format!("**Mode:** {}", packet.mode),
+        format!("**Output Type:** {}", packet.output_type),
+        format!("**Started:** {}", packet.timestamps.started_at),
+        format!("**Finished:** {}", packet.timestamps.finished_at),
+        String::new(),
+        "## Problem".to_string(),
+        packet.problem.clone(),
+        String::new(),
+        "## Constraints".to_string(),
+    ];
+
+    if packet.constraints.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for item in &packet.constraints {
+            lines.push(format!("- {item}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("## Decision".to_string());
+    lines.push(format!("- Selected: {}", packet.decision.selected_option));
+    for item in &packet.decision.why_selected {
+        lines.push(format!("  - Why: {item}"));
+    }
+    if !packet.decision.rejected_options.is_empty() {
+        lines.push("- Rejected options:".to_string());
+        for item in &packet.decision.rejected_options {
+            lines.push(format!("  - {} ({})", item.option, item.reason));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("## Consensus".to_string());
+    lines.push(format!(
+        "- consensus_score: {:.3}",
+        packet.consensus.consensus_score
+    ));
+    lines.push(format!(
+        "- confidence_score: {:.3}",
+        packet.consensus.confidence_score
+    ));
+    lines.push("- agreements:".to_string());
+    for item in &packet.consensus.key_agreements {
+        lines.push(format!("  - {item}"));
+    }
+    lines.push("- disagreements:".to_string());
+    for item in &packet.consensus.key_disagreements {
+        lines.push(format!("  - {item}"));
+    }
+
+    lines.push(String::new());
+    lines.push("## Risks".to_string());
+    for item in &packet.risks {
+        lines.push(format!(
+            "- [{}] {} -> mitigation: {}",
+            item.severity, item.risk, item.mitigation
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("## Next Actions".to_string());
+    for item in &packet.next_actions {
+        lines.push(format!(
+            "- {} | {} | owner={} | due={}",
+            item.id, item.action, item.owner, item.due
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("## Trace".to_string());
+    lines.push(format!("- round refs: {}", packet.trace.round_refs.join(", ")));
+    for evidence in &packet.trace.evidence_refs {
+        lines.push(format!("- evidence: {evidence}"));
+    }
+
+    lines.join("\n")
+}
+
+fn writeback_debate_result(
+    central_home: &Path,
+    request: &DebateNormalizedRequest,
+    final_packet: &DebateFinalPacket,
+) -> Result<Record, String> {
+    let target_type = select_writeback_record_type(
+        request.writeback_record_type.as_deref(),
+        &final_packet.output_type,
+    );
+    let title = format!(
+        "Debate {} - {}",
+        final_packet.output_type.to_uppercase(),
+        summarize_text_line(&final_packet.problem, 56)
+    );
+
+    let mut body_lines = vec![
+        format!("Run ID: `{}`", final_packet.run_id),
+        String::new(),
+        "## Selected Option".to_string(),
+        final_packet.decision.selected_option.clone(),
+        String::new(),
+        "## Why Selected".to_string(),
+    ];
+    for item in &final_packet.decision.why_selected {
+        body_lines.push(format!("- {item}"));
+    }
+    body_lines.push(String::new());
+    body_lines.push("## Risks".to_string());
+    for item in &final_packet.risks {
+        body_lines.push(format!("- [{}] {}", item.severity, item.risk));
+    }
+    body_lines.push(String::new());
+    body_lines.push("## Next Actions".to_string());
+    for item in &final_packet.next_actions {
+        body_lines.push(format!("- {} ({}) due {}", item.action, item.id, item.due));
+    }
+
+    let now = Local::now();
+    let payload = RecordPayload {
+        record_type: target_type,
+        title,
+        created_at: Some(final_packet.timestamps.finished_at.clone()),
+        source_text: Some(final_packet.problem.clone()),
+        final_body: Some(body_lines.join("\n")),
+        tags: Some(vec![
+            "debate".to_string(),
+            "debate-v0.1".to_string(),
+            final_packet.output_type.clone(),
+            format!("run:{}", final_packet.run_id),
+        ]),
+        date: Some(now.format("%Y-%m-%d").to_string()),
+        notion_page_id: None,
+        notion_url: None,
+        notion_sync_status: Some("SUCCESS".to_string()),
+        notion_error: None,
+        notion_last_synced_at: None,
+        notion_last_edited_time: None,
+        notion_last_synced_hash: None,
+    };
+
+    upsert_record(central_home.to_string_lossy().to_string(), payload, None)
+}
+
+fn select_writeback_record_type(requested: Option<&str>, output_type: &str) -> String {
+    if let Some(value) = requested {
+        let normalized = normalize_record_type(value);
+        if normalized == "decision" || normalized == "worklog" {
+            return normalized;
+        }
+    }
+
+    if output_type == "decision" {
+        "decision".to_string()
+    } else {
+        "worklog".to_string()
+    }
+}
+
+fn upsert_debate_index(
+    central_home: &Path,
+    final_packet: &DebateFinalPacket,
+    rounds: &[DebateRoundArtifact],
+    degraded: bool,
+    artifacts_root: &Path,
+    writeback_json_path: Option<String>,
+) -> Result<(), String> {
+    let mut conn = open_index_connection(central_home)?;
+    ensure_index_schema(&conn)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+
+    tx.execute(
+        "INSERT INTO debate_runs (
+            run_id,
+            output_type,
+            problem,
+            consensus_score,
+            confidence_score,
+            selected_option,
+            degraded,
+            started_at,
+            finished_at,
+            artifacts_root,
+            final_packet_path,
+            writeback_json_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+            output_type=excluded.output_type,
+            problem=excluded.problem,
+            consensus_score=excluded.consensus_score,
+            confidence_score=excluded.confidence_score,
+            selected_option=excluded.selected_option,
+            degraded=excluded.degraded,
+            started_at=excluded.started_at,
+            finished_at=excluded.finished_at,
+            artifacts_root=excluded.artifacts_root,
+            final_packet_path=excluded.final_packet_path,
+            writeback_json_path=excluded.writeback_json_path",
+        params![
+            final_packet.run_id,
+            final_packet.output_type,
+            final_packet.problem,
+            final_packet.consensus.consensus_score,
+            final_packet.consensus.confidence_score,
+            final_packet.decision.selected_option,
+            if degraded { 1 } else { 0 },
+            final_packet.timestamps.started_at,
+            final_packet.timestamps.finished_at,
+            artifacts_root.to_string_lossy().to_string(),
+            artifacts_root.join("final-packet.json").to_string_lossy().to_string(),
+            writeback_json_path.unwrap_or_default(),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+
+    tx.execute(
+        "DELETE FROM debate_turns WHERE run_id = ?",
+        params![final_packet.run_id],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.execute(
+        "DELETE FROM debate_actions WHERE run_id = ?",
+        params![final_packet.run_id],
+    )
+    .map_err(|error| error.to_string())?;
+
+    for round in rounds {
+        for turn in &round.turns {
+            let challenges = serde_json::to_string(&turn.challenges).unwrap_or_else(|_| "[]".to_string());
+            let revisions = serde_json::to_string(&turn.revisions).unwrap_or_else(|_| "[]".to_string());
+            tx.execute(
+                "INSERT INTO debate_turns (
+                    run_id,
+                    round_number,
+                    role,
+                    provider,
+                    model_name,
+                    status,
+                    claim,
+                    rationale,
+                    challenges_json,
+                    revisions_json,
+                    error_code,
+                    error_message,
+                    duration_ms,
+                    started_at,
+                    finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    final_packet.run_id,
+                    round_number_from_str(&round.round),
+                    turn.role,
+                    turn.model_provider,
+                    turn.model_name,
+                    turn.status,
+                    turn.claim,
+                    turn.rationale,
+                    challenges,
+                    revisions,
+                    turn.error_code.clone().unwrap_or_default(),
+                    turn.error_message.clone().unwrap_or_default(),
+                    i64::try_from(turn.duration_ms).unwrap_or(i64::MAX),
+                    turn.started_at,
+                    turn.finished_at,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+
+    for action in &final_packet.next_actions {
+        tx.execute(
+            "INSERT INTO debate_actions (
+                run_id,
+                action_id,
+                action,
+                owner,
+                due,
+                status
+            ) VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                final_packet.run_id,
+                action.id,
+                action.action,
+                action.owner,
+                action.due,
+                "OPEN",
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn count_debate_turns(central_home: &Path, run_id: &str) -> Result<usize, String> {
+    let conn = open_index_connection(central_home)?;
+    ensure_index_schema(&conn)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM debate_turns WHERE run_id = ?",
+        params![run_id],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn count_debate_actions(central_home: &Path, run_id: &str) -> Result<usize, String> {
+    let conn = open_index_connection(central_home)?;
+    ensure_index_schema(&conn)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM debate_actions WHERE run_id = ?",
+        params![run_id],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn read_json_value(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Err(debate_error(
+            "DEBATE_ERR_NOT_FOUND",
+            &format!("Artifact missing: {}", path.to_string_lossy()),
+        ));
+    }
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str::<Value>(&content).map_err(|error| error.to_string())
+}
+
+fn debate_error(code: &str, message: &str) -> String {
+    format!("{code}: {message}")
+}
+
+fn parse_debate_error(error: &str) -> (Option<String>, String) {
+    if let Some((code, rest)) = error.split_once(':') {
+        let trimmed_code = code.trim().to_string();
+        let trimmed_rest = rest.trim().to_string();
+        if trimmed_code.starts_with("DEBATE_") {
+            return (Some(trimmed_code), trimmed_rest);
+        }
+    }
+    (None, error.to_string())
+}
+
+fn generate_debate_run_id() -> String {
+    let now = Local::now();
+    let millis = now.timestamp_millis().abs();
+    format!(
+        "debate_{}_{}",
+        now.format("%Y%m%d_%H%M%S"),
+        millis % 100000
+    )
+}
+
+fn dedup_non_empty(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let clean = item.trim().to_string();
+        if clean.is_empty() || !seen.insert(clean.clone()) {
+            continue;
+        }
+        out.push(clean);
+    }
+    out
+}
+
+fn summarize_text_line(value: &str, max_chars: usize) -> String {
+    let line = value
+        .lines()
+        .map(|item| item.trim())
+        .find(|item| !item.is_empty())
+        .unwrap_or("")
+        .to_string();
+
+    if line.chars().count() <= max_chars {
+        line
+    } else {
+        let truncated = line.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+        format!("{}…", truncated.trim())
+    }
+}
+
+fn extract_risk_lines(value: &str) -> Vec<String> {
+    let mut risks = value
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            lower.contains("risk")
+                || lower.contains("blocker")
+                || lower.contains("issue")
+                || lower.contains("failure")
+                || lower.contains("風險")
+                || lower.contains("阻塞")
+                || lower.contains("問題")
+        })
+        .map(|line| line.trim_start_matches(['-', '*', '•', ' ']).trim().to_string())
+        .collect::<Vec<_>>();
+
+    if risks.is_empty() {
+        let fallback = summarize_text_line(value, 130);
+        if !fallback.is_empty() {
+            risks.push(format!("Potential risk: {fallback}"));
+        }
+    }
+
+    dedup_non_empty(risks)
+}
+
+fn find_turn<'a>(
+    rounds: &'a [DebateRoundArtifact],
+    round: DebateRound,
+    role: DebateRole,
+) -> Option<&'a DebateTurn> {
+    rounds
+        .iter()
+        .find(|artifact| artifact.round == round.as_str())
+        .and_then(|artifact| {
+            artifact
+                .turns
+                .iter()
+                .find(|turn| turn.role == role.as_str() && turn.status == "ok")
+        })
+}
+
+fn round_score(value: f64) -> f64 {
+    (value.clamp(0.0, 1.0) * 1000.0).round() / 1000.0
+}
+
+fn classify_risk_severity(risk: &str) -> &'static str {
+    let lower = risk.to_lowercase();
+    if lower.contains("security")
+        || lower.contains("data loss")
+        || lower.contains("outage")
+        || lower.contains("blocking")
+        || lower.contains("critical")
+    {
+        "high"
+    } else if lower.contains("latency")
+        || lower.contains("cost")
+        || lower.contains("quality")
+        || lower.contains("stability")
+    {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn due_after_days(days: i64) -> String {
+    (Local::now().date_naive() + ChronoDuration::days(days))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+fn round_number_from_str(value: &str) -> i64 {
+    match value {
+        "round-1" => 1,
+        "round-2" => 2,
+        "round-3" => 3,
+        _ => 0,
+    }
+}
+
 fn build_context_digest(
     records: &[Record],
     logs: &[LogEntry],
@@ -1862,6 +3707,42 @@ fn resolve_api_key(api_key: Option<String>) -> Result<String, String> {
         .map_err(|_| "Missing OpenAI API key. Set it in Settings first.".to_string())
 }
 
+fn resolve_gemini_api_key(api_key: Option<String>) -> Result<String, String> {
+    if let Some(provided) = api_key {
+        if !provided.trim().is_empty() {
+            return Ok(provided.trim().to_string());
+        }
+    }
+
+    let entry = gemini_keyring_entry()?;
+    match entry.get_password() {
+        Ok(value) if !value.trim().is_empty() => Ok(value.trim().to_string()),
+        Ok(_) => Err("Missing Gemini API key. Set it in Settings first.".to_string()),
+        Err(KeyringError::NoEntry) => {
+            Err("Missing Gemini API key. Set it in Settings first.".to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn resolve_claude_api_key(api_key: Option<String>) -> Result<String, String> {
+    if let Some(provided) = api_key {
+        if !provided.trim().is_empty() {
+            return Ok(provided.trim().to_string());
+        }
+    }
+
+    let entry = claude_keyring_entry()?;
+    match entry.get_password() {
+        Ok(value) if !value.trim().is_empty() => Ok(value.trim().to_string()),
+        Ok(_) => Err("Missing Claude API key. Set it in Settings first.".to_string()),
+        Err(KeyringError::NoEntry) => {
+            Err("Missing Claude API key. Set it in Settings first.".to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn extract_openai_output_text(value: &Value) -> String {
     if let Some(text) = value.get("output_text").and_then(Value::as_str) {
         if !text.trim().is_empty() {
@@ -1920,6 +3801,48 @@ fn ensure_index_schema(conn: &Connection) -> Result<(), String> {
          CREATE TABLE IF NOT EXISTS records_index_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS debate_runs (
+            run_id TEXT PRIMARY KEY,
+            output_type TEXT NOT NULL,
+            problem TEXT NOT NULL,
+            consensus_score REAL NOT NULL,
+            confidence_score REAL NOT NULL,
+            selected_option TEXT NOT NULL,
+            degraded INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            artifacts_root TEXT NOT NULL,
+            final_packet_path TEXT NOT NULL,
+            writeback_json_path TEXT
+         );
+         CREATE TABLE IF NOT EXISTS debate_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            round_number INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            claim TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            challenges_json TEXT NOT NULL,
+            revisions_json TEXT NOT NULL,
+            error_code TEXT,
+            error_message TEXT,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_debate_turns_run_id ON debate_turns(run_id);
+         CREATE TABLE IF NOT EXISTS debate_actions (
+            run_id TEXT NOT NULL,
+            action_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            due TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            PRIMARY KEY (run_id, action_id)
          );",
     )
     .map_err(|error| error.to_string())
@@ -2008,6 +3931,7 @@ fn ensure_structure(central_home: &Path) -> std::io::Result<()> {
     for (_, folder) in RECORD_TYPE_DIRS {
         fs::create_dir_all(records_root.join(folder))?;
     }
+    fs::create_dir_all(records_root.join("debates"))?;
     fs::create_dir_all(central_home.join(".agentic").join("logs"))?;
     Ok(())
 }
@@ -4018,6 +5942,251 @@ fn parse_mcp_tool_payload(response: &Value) -> Result<Value, String> {
     Ok(parsed)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn make_test_home(case: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kofnote_debate_{}_{}_{}",
+            case,
+            std::process::id(),
+            Local::now().timestamp_micros()
+        ));
+        fs::create_dir_all(dir.join(".agentic")).expect("create .agentic");
+        fs::write(dir.join(".agentic").join("CENTRAL_LOG_MARKER"), b"ok")
+            .expect("marker write");
+        dir
+    }
+
+    fn cleanup_test_home(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn sample_request() -> DebateModeRequest {
+        DebateModeRequest {
+            problem: "Choose implementation strategy for local-first debate mode".to_string(),
+            constraints: vec![
+                "Local-first persistence is mandatory".to_string(),
+                "Output must be replayable".to_string(),
+            ],
+            output_type: "decision".to_string(),
+            participants: Vec::new(),
+            max_turn_seconds: Some(10),
+            max_turn_tokens: Some(512),
+            writeback_record_type: Some("decision".to_string()),
+        }
+    }
+
+    fn sample_packet() -> DebateFinalPacket {
+        DebateFinalPacket {
+            run_id: "debate_20260210_120000_123".to_string(),
+            mode: "debate-v0.1".to_string(),
+            problem: "Test".to_string(),
+            constraints: vec!["A".to_string()],
+            output_type: "decision".to_string(),
+            participants: DebateRole::all()
+                .iter()
+                .map(|role| DebatePacketParticipant {
+                    role: role.as_str().to_string(),
+                    model_provider: "local".to_string(),
+                    model_name: "local-heuristic-v1".to_string(),
+                })
+                .collect(),
+            consensus: DebatePacketConsensus {
+                consensus_score: 0.8,
+                confidence_score: 0.75,
+                key_agreements: vec!["g1".to_string()],
+                key_disagreements: vec!["d1".to_string()],
+            },
+            decision: DebateDecision {
+                selected_option: "option".to_string(),
+                why_selected: vec!["why".to_string()],
+                rejected_options: vec![],
+            },
+            risks: vec![DebateRisk {
+                risk: "risk".to_string(),
+                severity: "low".to_string(),
+                mitigation: "mitigate".to_string(),
+            }],
+            next_actions: vec![DebateAction {
+                id: "A1".to_string(),
+                action: "act".to_string(),
+                owner: "me".to_string(),
+                due: "2026-02-10".to_string(),
+            }],
+            trace: DebateTrace {
+                round_refs: vec!["round-1".to_string(), "round-2".to_string(), "round-3".to_string()],
+                evidence_refs: vec!["/tmp/a.json".to_string()],
+            },
+            timestamps: DebatePacketTimestamps {
+                started_at: "2026-02-10T10:00:00Z".to_string(),
+                finished_at: "2026-02-10T10:00:10Z".to_string(),
+            },
+        }
+    }
+
+    fn collect_key_paths(value: &Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                for key in keys {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    out.push(path.clone());
+                    if let Some(next) = map.get(&key) {
+                        collect_key_paths(next, &path, out);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                if let Some(first) = items.first() {
+                    let path = if prefix.is_empty() {
+                        "[0]".to_string()
+                    } else {
+                        format!("{prefix}[0]")
+                    };
+                    out.push(path.clone());
+                    collect_key_paths(first, &path, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn debate_transition_guard_matrix() {
+        assert!(validate_debate_transition(None, DebateState::Intake));
+        assert!(validate_debate_transition(
+            Some(DebateState::Intake),
+            DebateState::Round1
+        ));
+        assert!(validate_debate_transition(
+            Some(DebateState::Round1),
+            DebateState::Round2
+        ));
+        assert!(!validate_debate_transition(
+            Some(DebateState::Round1),
+            DebateState::Consensus
+        ));
+        assert!(!validate_debate_transition(
+            Some(DebateState::Writeback),
+            DebateState::Round1
+        ));
+    }
+
+    #[test]
+    fn final_packet_validation_bounds() {
+        let mut packet = sample_packet();
+        assert!(validate_final_packet(&packet).is_ok());
+
+        packet.consensus.consensus_score = 1.4;
+        assert!(validate_final_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn debate_happy_path_local_persists_artifacts() {
+        let home = make_test_home("happy");
+        let result = run_debate_mode_internal(&home, sample_request()).expect("run debate");
+
+        assert_eq!(result.mode, "debate-v0.1");
+        assert_eq!(result.state, "Writeback");
+        assert!(!result.run_id.is_empty());
+        assert!(!result.final_packet.next_actions.is_empty());
+        assert!(result.writeback_json_path.is_some());
+
+        let root = home.join("records").join("debates").join(&result.run_id);
+        assert!(root.join("request.json").exists());
+        assert!(root.join("rounds").join("round-1.json").exists());
+        assert!(root.join("rounds").join("round-2.json").exists());
+        assert!(root.join("rounds").join("round-3.json").exists());
+        assert!(root.join("consensus.json").exists());
+        assert!(root.join("final-packet.json").exists());
+        assert!(root.join("final-packet.md").exists());
+
+        cleanup_test_home(&home);
+    }
+
+    #[test]
+    fn debate_degraded_when_provider_fails() {
+        let home = make_test_home("degraded");
+        let mut request = sample_request();
+        request.participants = vec![DebateParticipantConfig {
+            role: Some("Analyst".to_string()),
+            model_provider: Some("gemini".to_string()),
+            model_name: Some("gemini-2.0-flash".to_string()),
+        }];
+
+        let result = run_debate_mode_internal(&home, request).expect("run debate");
+        assert!(result.degraded);
+        assert!(result
+            .error_codes
+            .iter()
+            .any(|code| code.contains("DEBATE_ERR_PROVIDER_GEMINI")));
+
+        cleanup_test_home(&home);
+    }
+
+    #[test]
+    fn debate_replay_works_without_cloud() {
+        let home = make_test_home("replay");
+        let result = run_debate_mode_internal(&home, sample_request()).expect("run debate");
+        let replay =
+            replay_debate_mode_internal(&home, &result.run_id).expect("replay should load from local artifacts");
+
+        assert_eq!(replay.run_id, result.run_id);
+        assert!(replay.consistency.files_complete);
+        assert_eq!(replay.rounds.len(), 3);
+
+        cleanup_test_home(&home);
+    }
+
+    #[test]
+    fn debate_provider_combinations_keep_packet_shape() {
+        let home = make_test_home("shape");
+
+        let local = run_debate_mode_internal(&home, sample_request()).expect("local run");
+
+        let mut mixed_request = sample_request();
+        mixed_request.participants = vec![
+            DebateParticipantConfig {
+                role: Some("Proponent".to_string()),
+                model_provider: Some("openai".to_string()),
+                model_name: Some("gpt-4.1-mini".to_string()),
+            },
+            DebateParticipantConfig {
+                role: Some("Critic".to_string()),
+                model_provider: Some("local".to_string()),
+                model_name: Some("local-heuristic-v1".to_string()),
+            },
+            DebateParticipantConfig {
+                role: Some("Analyst".to_string()),
+                model_provider: Some("claude".to_string()),
+                model_name: Some("claude-3-5-sonnet-latest".to_string()),
+            },
+        ];
+        let mixed = run_debate_mode_internal(&home, mixed_request).expect("mixed run");
+
+        let local_json = serde_json::to_value(local.final_packet).expect("local packet json");
+        let mixed_json = serde_json::to_value(mixed.final_packet).expect("mixed packet json");
+
+        let mut local_keys = Vec::new();
+        let mut mixed_keys = Vec::new();
+        collect_key_paths(&local_json, "", &mut local_keys);
+        collect_key_paths(&mixed_json, "", &mut mixed_keys);
+        local_keys.sort();
+        mixed_keys.sort();
+
+        assert_eq!(local_keys, mixed_keys);
+        cleanup_test_home(&home);
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -4031,6 +6200,8 @@ fn main() {
             rebuild_search_index,
             search_records,
             run_ai_analysis,
+            run_debate_mode,
+            replay_debate_mode,
             export_markdown_report,
             get_home_fingerprint,
             get_health_diagnostics,

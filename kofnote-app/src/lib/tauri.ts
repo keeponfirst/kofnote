@@ -3,6 +3,9 @@ import { open } from '@tauri-apps/plugin-dialog'
 import type {
   AiAnalysisResponse,
   AppSettings,
+  DebateModeRequest,
+  DebateModeResponse,
+  DebateReplayResponse,
   DashboardStats,
   ExportReportResult,
   HealthDiagnostics,
@@ -36,6 +39,7 @@ type MockState = {
   hasClaudeKey: boolean
   hasNotionKey: boolean
   notebooks: NotebookSummary[]
+  debateRuns: Record<string, DebateModeResponse>
 }
 
 function nowMinus(hours: number): string {
@@ -174,6 +178,7 @@ function createMockState(): MockState {
         updatedAt: nowMinus(20),
       },
     ],
+    debateRuns: {},
     settings: {
       profiles: [
         {
@@ -284,6 +289,81 @@ function createHealth(): HealthDiagnostics {
     hasClaudeApiKey: mockState.hasClaudeKey,
     profileCount: mockState.settings.profiles.length,
   }
+}
+
+function createMockDebateResponse(request: DebateModeRequest, centralHome: string): DebateModeResponse {
+  const now = new Date()
+  const startedAt = now.toISOString()
+  const finishedAt = new Date(now.getTime() + 1500).toISOString()
+  const runId = `debate_${now.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}_${Math.floor(Math.random() * 9999)}`
+  const problem = request.problem?.trim() || '(empty problem)'
+  const outputType = request.outputType || 'decision'
+  const participants =
+    request.participants && request.participants.length > 0
+      ? request.participants
+      : ['Proponent', 'Critic', 'Analyst', 'Synthesizer', 'Judge'].map((role) => ({
+          role,
+          modelProvider: 'local',
+          modelName: 'local-heuristic-v1',
+        }))
+
+  const response: DebateModeResponse = {
+    runId,
+    mode: 'debate-v0.1',
+    state: 'Writeback',
+    degraded: false,
+    artifactsRoot: `${centralHome}/records/debates/${runId}`,
+    writebackJsonPath: `${centralHome}/records/${outputType === 'decision' ? 'decision' : 'worklog'}/${slugify(problem)}.json`,
+    errorCodes: [],
+    finalPacket: {
+      runId,
+      mode: 'debate-v0.1',
+      problem,
+      constraints: request.constraints ?? [],
+      outputType,
+      participants: participants.map((item) => ({
+        role: item.role || 'Proponent',
+        modelProvider: item.modelProvider || 'local',
+        modelName: item.modelName || 'local-heuristic-v1',
+      })),
+      consensus: {
+        consensusScore: 0.92,
+        confidenceScore: 0.89,
+        keyAgreements: ['Keep local-first writeback as source of truth.', 'Return executable next actions.'],
+        keyDisagreements: ['Provider selection can impact cost vs latency trade-offs.'],
+      },
+      decision: {
+        selectedOption: `Execute ${outputType} packet for: ${problem}`,
+        whySelected: ['Best balance between speed, traceability, and replayability.'],
+        rejectedOptions: [{ option: 'Single-model quick answer', reason: 'Too little adversarial checking.' }],
+      },
+      risks: [
+        {
+          risk: 'Provider instability can reduce debate completeness.',
+          severity: 'medium',
+          mitigation: 'Enable degraded completion with explicit failure traces.',
+        },
+      ],
+      nextActions: [
+        { id: 'A1', action: 'Run packet execution checklist', owner: 'me', due: new Date(now.getTime() + 86400000).toISOString().slice(0, 10) },
+        { id: 'A2', action: 'Review risks and mitigation readiness', owner: 'me', due: new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10) },
+        { id: 'A3', action: 'Replay run and record final decision', owner: 'me', due: new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10) },
+      ],
+      trace: {
+        roundRefs: ['round-1', 'round-2', 'round-3'],
+        evidenceRefs: [
+          `${centralHome}/records/debates/${runId}/request.json`,
+          `${centralHome}/records/debates/${runId}/consensus.json`,
+        ],
+      },
+      timestamps: {
+        startedAt,
+        finishedAt,
+      },
+    },
+  }
+
+  return response
 }
 
 function findRecordByPath(jsonPath: string): RecordItem | undefined {
@@ -425,6 +505,61 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
         content,
       }
       return result as T
+    }
+    case 'run_debate_mode': {
+      const centralHome = String(args.centralHome ?? mockState.centralHome)
+      const request = (args.request ?? {}) as DebateModeRequest
+      const response = createMockDebateResponse(request, centralHome)
+      mockState.debateRuns[response.runId] = clone(response)
+      return clone(response) as T
+    }
+    case 'replay_debate_mode': {
+      const runId = String(args.runId ?? '')
+      const hit = mockState.debateRuns[runId]
+      const response: DebateReplayResponse = hit
+        ? {
+            runId: hit.runId,
+            request: {
+              problem: hit.finalPacket.problem,
+              constraints: hit.finalPacket.constraints,
+              outputType: hit.finalPacket.outputType,
+            },
+            rounds: [
+              { round: 'round-1', turns: [] },
+              { round: 'round-2', turns: [] },
+              { round: 'round-3', turns: [] },
+            ],
+            consensus: hit.finalPacket.consensus as unknown as Record<string, unknown>,
+            finalPacket: hit.finalPacket,
+            writebackRecord: hit.writebackJsonPath
+              ? mockState.records.find((item) => item.jsonPath === hit.writebackJsonPath) ?? null
+              : null,
+            consistency: {
+              filesComplete: true,
+              sqlIndexed: true,
+              issues: [],
+            },
+          }
+        : {
+            runId,
+            request: {},
+            rounds: [],
+            consensus: {},
+            finalPacket: createMockDebateResponse(
+              {
+                problem: 'Unknown run',
+                outputType: 'decision',
+              },
+              mockState.centralHome,
+            ).finalPacket,
+            writebackRecord: null,
+            consistency: {
+              filesComplete: false,
+              sqlIndexed: false,
+              issues: [`Missing run in mock runtime: ${runId}`],
+            },
+          }
+      return clone(response) as T
     }
     case 'export_markdown_report': {
       const title = String(args.title ?? 'KOF Note Report')
@@ -806,6 +941,20 @@ export async function notebooklmAsk(args: {
   config?: NotebookLmConfig
 }): Promise<NotebookLmAskResult> {
   return invokeCommand<NotebookLmAskResult>('notebooklm_ask', args)
+}
+
+export async function runDebateMode(args: {
+  centralHome: string
+  request: DebateModeRequest
+}): Promise<DebateModeResponse> {
+  return invokeCommand<DebateModeResponse>('run_debate_mode', args)
+}
+
+export async function replayDebateMode(args: {
+  centralHome: string
+  runId: string
+}): Promise<DebateReplayResponse> {
+  return invokeCommand<DebateReplayResponse>('replay_debate_mode', args)
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {

@@ -1,5 +1,5 @@
 export type RecordType = 'decision' | 'worklog' | 'idea' | 'backlog' | 'note'
-export type AiProvider = 'local' | 'openai'
+export type AiProvider = 'local' | 'openai' | 'gemini' | 'claude'
 
 export type RecordItem = {
   recordType: RecordType
@@ -186,4 +186,146 @@ export type NotebookSummary = {
 export type NotebookLmAskResult = {
   answer: string
   citations: string[]
+}
+
+export type DebateRole = 'Proponent' | 'Critic' | 'Analyst' | 'Synthesizer' | 'Judge'
+export type DebateRound = 'round-1' | 'round-2' | 'round-3'
+export type DebateOutputType = 'decision' | 'writing' | 'architecture' | 'planning' | 'evaluation'
+
+export type DebateParticipantConfig = {
+  role?: DebateRole | string
+  modelProvider?: string
+  modelName?: string
+}
+
+export type DebateModeRequest = {
+  problem: string
+  constraints?: string[]
+  outputType: DebateOutputType
+  participants?: DebateParticipantConfig[]
+  maxTurnSeconds?: number
+  maxTurnTokens?: number
+  writebackRecordType?: RecordType
+}
+
+export type DebateChallenge = {
+  sourceRole: string
+  targetRole: string
+  question: string
+  response: string
+}
+
+export type DebateTurn = {
+  role: string
+  round: DebateRound | string
+  modelProvider: string
+  modelName: string
+  status: 'ok' | 'failed' | string
+  claim: string
+  rationale: string
+  risks: string[]
+  challenges: DebateChallenge[]
+  revisions: string[]
+  targetRole?: string | null
+  durationMs: number
+  errorCode?: string | null
+  errorMessage?: string | null
+  startedAt: string
+  finishedAt: string
+}
+
+export type DebateRoundArtifact = {
+  round: DebateRound | string
+  turns: DebateTurn[]
+  startedAt: string
+  finishedAt: string
+}
+
+export type DebatePacketParticipant = {
+  role: string
+  modelProvider: string
+  modelName: string
+}
+
+export type DebatePacketConsensus = {
+  consensusScore: number
+  confidenceScore: number
+  keyAgreements: string[]
+  keyDisagreements: string[]
+}
+
+export type DebateRejectedOption = {
+  option: string
+  reason: string
+}
+
+export type DebateDecision = {
+  selectedOption: string
+  whySelected: string[]
+  rejectedOptions: DebateRejectedOption[]
+}
+
+export type DebateRisk = {
+  risk: string
+  severity: 'high' | 'medium' | 'low' | string
+  mitigation: string
+}
+
+export type DebateAction = {
+  id: string
+  action: string
+  owner: string
+  due: string
+}
+
+export type DebateTrace = {
+  roundRefs: string[]
+  evidenceRefs: string[]
+}
+
+export type DebatePacketTimestamps = {
+  startedAt: string
+  finishedAt: string
+}
+
+export type DebateFinalPacket = {
+  runId: string
+  mode: string
+  problem: string
+  constraints: string[]
+  outputType: DebateOutputType | string
+  participants: DebatePacketParticipant[]
+  consensus: DebatePacketConsensus
+  decision: DebateDecision
+  risks: DebateRisk[]
+  nextActions: DebateAction[]
+  trace: DebateTrace
+  timestamps: DebatePacketTimestamps
+}
+
+export type DebateModeResponse = {
+  runId: string
+  mode: string
+  state: string
+  degraded: boolean
+  finalPacket: DebateFinalPacket
+  artifactsRoot: string
+  writebackJsonPath?: string | null
+  errorCodes: string[]
+}
+
+export type DebateReplayConsistency = {
+  filesComplete: boolean
+  sqlIndexed: boolean
+  issues: string[]
+}
+
+export type DebateReplayResponse = {
+  runId: string
+  request: Record<string, unknown>
+  rounds: Record<string, unknown>[]
+  consensus: Record<string, unknown>
+  finalPacket: DebateFinalPacket
+  writebackRecord?: RecordItem | null
+  consistency: DebateReplayConsistency
 }

@@ -2,6 +2,31 @@
 
 A desktop control panel for `keeponfirst-local-brain` central logs.
 
+## Documentation
+
+- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- SDD with OpenSpec: [`docs/SDD_WITH_OPENSPEC.md`](docs/SDD_WITH_OPENSPEC.md)
+- Debate Mode v0.1 runtime: [`docs/DEBATE_MODE_V01.md`](docs/DEBATE_MODE_V01.md)
+- OpenSpec example spec: [`openspec/specs/example/spec.md`](openspec/specs/example/spec.md)
+- Tauri app implementation notes: [`kofnote-app/README.md`](kofnote-app/README.md)
+
+## SDD workflow (OpenSpec)
+
+Use OpenSpec as SSOT before implementation changes:
+
+```bash
+# one-time setup
+npm install -g @fission-ai/openspec@latest
+cd /Users/pershing/Documents/henry/Fun/kofnote
+openspec init
+
+# per change
+openspec new change "<change-id>"
+openspec status --change "<change-id>"
+openspec instructions <artifact> --change "<change-id>"
+openspec instructions apply --change "<change-id>"
+```
+
 ## What this app does
 
 - Select one **Central Home** directory (the same root used by `keeponfirst-local-brain`)
