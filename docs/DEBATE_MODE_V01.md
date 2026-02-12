@@ -36,9 +36,9 @@ Optional fields:
 
 Supported provider labels:
 - `local`
-- `openai`
-- `gemini`
-- `claude`
+- `openai`, `gemini`, `claude` (API-based)
+- `codex-cli`, `gemini-cli`, `claude-cli` (CLI-based, live execution)
+- `chatgpt-web`, `gemini-web`, `claude-web` (config-ready, local stub fallback)
 
 Notes:
 - Unknown provider values are normalized to `local`

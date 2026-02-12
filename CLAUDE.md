@@ -58,18 +58,20 @@ Desktop User → React UI (App.tsx) → Tauri Bridge (lib/tauri.ts) → Rust Com
 
 | 檔案 | 職責 |
 |------|------|
-| `kofnote-app/src/App.tsx` | 主 UI 編排、tab 路由、狀態管理（大型單體檔案） |
+| `kofnote-app/src/App.tsx` | 前端入口（薄層 wrapper） |
+| `kofnote-app/src/components/AppLegacy.tsx` | 目前主 UI 編排、tab 路由、狀態管理（待持續拆分） |
 | `kofnote-app/src/lib/tauri.ts` | Tauri invoke 型別封裝 + mock runtime fallback |
 | `kofnote-app/src/types.ts` | 前後端共用 TypeScript DTO |
-| `kofnote-app/src-tauri/src/main.rs` | Rust 後端：所有 Tauri commands（大型單體檔案） |
+| `kofnote-app/src-tauri/src/main.rs` | Rust 啟動 wiring（Builder + invoke handler） |
+| `kofnote-app/src-tauri/src/types.rs` | Rust 執行邏輯與 command 實作（目前主要邏輯檔） |
 | `kofnote-app/src/i18n/` | 國際化字典（`en`, `zh-TW`） |
 | `kofnote-app/src/lib/providerRegistry.ts` | Debate Mode provider 抽象層 |
 
 ### 模組邊界
 
-- **Presentation**：`App.tsx` + `index.css`（Tabs: Dashboard / Records / Logs / AI / Integrations / Settings / Health）
+- **Presentation**：`App.tsx`（entry）+ `components/AppLegacy.tsx` + `index.css`
 - **Frontend Gateway**：`lib/tauri.ts`（typed invoke wrappers；`VITE_KOF_MOCK=1` 啟用 mock）
-- **Backend**：`main.rs`（commands + repositories + integration adapters）
+- **Backend**：`main.rs`（startup）+ `types.rs`（commands + repositories + integration adapters）
 - **Shared Contracts**：`types.ts`
 
 ### 資料存儲

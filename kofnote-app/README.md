@@ -76,7 +76,17 @@ Now includes M7 connectors for Notion + NotebookLM.
   - Web: `chatgpt-web`, `gemini-web`, `claude-web`
 - Runtime in current build:
   - `codex-cli`: wired to real `codex exec`
-  - `gemini-cli`, `claude-cli`, all `*-web`: config-ready, currently local stub fallback
+  - `gemini-cli`: wired to real `gemini` one-shot invocation
+  - `claude-cli`: wired to real `claude --print` invocation
+  - all `*-web`: config-ready, currently local stub fallback
+- Debate Mode model field behavior:
+  - For CLI providers (`codex-cli`, `gemini-cli`, `claude-cli`), model is optional.
+  - Leave model blank (or `auto`) to use the provider's default CLI/account model.
+  - If a specific model is not supported, runtime retries once without explicit model.
+- CLI provider smoke checks:
+  - `codex exec - --skip-git-repo-check --sandbox read-only --output-last-message /tmp/codex.out --color never <<< "Reply with one line only."`
+  - `gemini "Reply with one line only." --output-format json`
+  - `claude --print --output-format json "Reply with one line only."`
 - Example config:
   - `examples/providers.example.json`
 

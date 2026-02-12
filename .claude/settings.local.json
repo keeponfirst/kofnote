@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint:*)",
+      "Bash(PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo build:*)",
+      "Bash(PATH=\"$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$HOME/.cargo/bin:$PATH\" cargo build:*)",
+      "Bash(/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin/cargo build --manifest-path /Users/pershing/Documents/henry/Fun/kofnote/kofnote-app/src-tauri/Cargo.toml)",
+      "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo build:*)",
+      "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo check:*)",
+      "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo test:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

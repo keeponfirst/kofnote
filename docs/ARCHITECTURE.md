@@ -29,9 +29,9 @@ The goal is to give one local-first command center for knowledge capture, operat
 
 ```mermaid
 flowchart LR
-  U["Desktop User"] --> FE["React UI\n/src/App.tsx"]
+  U["Desktop User"] --> FE["React UI\n/src/App.tsx + /src/components/AppLegacy.tsx"]
   FE --> BR["Tauri Bridge\n/src/lib/tauri.ts"]
-  BR --> CMD["Rust Commands\n/src-tauri/src/main.rs"]
+  BR --> CMD["Rust Commands\n/src-tauri/src/types.rs + modular folders"]
 
   CMD --> FS["Central Home Filesystem\nrecords/* + .agentic/logs/*"]
   CMD --> IDX["SQLite FTS\n<central_home>/.agentic/kofnote_search.sqlite"]
@@ -45,9 +45,9 @@ flowchart LR
 
 ### Module boundaries
 
-- Presentation/UI: `kofnote-app/src/App.tsx`, `kofnote-app/src/index.css`.
+- Presentation/UI: `kofnote-app/src/App.tsx` (entry), `kofnote-app/src/components/AppLegacy.tsx`, `kofnote-app/src/index.css`.
 - Frontend gateway: `kofnote-app/src/lib/tauri.ts` (typed wrapper + mock runtime).
-- Domain/infra backend: `kofnote-app/src-tauri/src/main.rs` (commands + repositories + integration adapters).
+- Domain/infra backend: `kofnote-app/src-tauri/src/main.rs` (startup wiring) + `kofnote-app/src-tauri/src/types.rs` (runtime logic) + modular folders under `commands/`, `providers/`, `storage/`.
 - Shared contracts: `kofnote-app/src/types.ts`.
 - i18n layer: `kofnote-app/src/i18n/*` (currently `en`, `zh-TW`).
 
@@ -69,12 +69,20 @@ flowchart LR
 │   └── test_analytics.py
 ├── kofnote-app/                      # main production desktop app
 │   ├── src/
-│   │   ├── App.tsx                   # main UI and orchestration
+│   │   ├── App.tsx                   # thin app entrypoint
+│   │   ├── components/AppLegacy.tsx  # current full UI orchestration
+│   │   ├── components/*Tab.tsx       # planned tab extraction targets
+│   │   ├── hooks/useNotices.ts       # notice hook scaffold
+│   │   ├── constants.ts              # frontend constants scaffold
 │   │   ├── lib/tauri.ts              # invoke wrappers + mock runtime
 │   │   ├── i18n/                     # translation dictionaries
 │   │   └── types.ts                  # TS DTOs
 │   ├── src-tauri/
-│   │   ├── src/main.rs               # Tauri commands, FS, sync, AI, MCP
+│   │   ├── src/main.rs               # Tauri startup wiring
+│   │   ├── src/types.rs              # runtime logic + command implementations
+│   │   ├── src/commands/             # command module namespace (scaffold)
+│   │   ├── src/providers/            # provider module namespace (scaffold)
+│   │   └── src/storage/              # storage module namespace (scaffold)
 │   │   ├── tauri.conf.json           # Tauri app/runtime config
 │   │   └── Cargo.toml                # Rust deps/features
 │   ├── e2e/smoke.spec.ts             # Playwright e2e smoke
@@ -234,7 +242,7 @@ Notes:
 ## 7. Known Technical Debt / Risks (from current state)
 
 1. **Large monolithic modules**
-   - `kofnote-app/src/App.tsx` (~3k+ lines) and `kofnote-app/src-tauri/src/main.rs` (~4k+ lines) bundle multiple concerns, increasing change risk.
+   - Runtime monolith risk still exists in `kofnote-app/src/components/AppLegacy.tsx` and `kofnote-app/src-tauri/src/types.rs`; extraction scaffolds are in place but decomposition is still ongoing.
 
 2. **Dual runtime maintenance cost**
    - Legacy Python app and Tauri app coexist, with overlapping capabilities and duplicated logic.
