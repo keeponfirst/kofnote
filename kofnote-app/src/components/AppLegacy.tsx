@@ -67,6 +67,7 @@ import type {
   AiProvider,
   AppSettings,
   DebateProviderConfig,
+  DebateProgress,
   DebateModeResponse,
   DebateOutputType,
   DebateReplayResponse,
@@ -500,6 +501,12 @@ function App() {
   const [debateResult, setDebateResult] = useState<DebateModeResponse | null>(null)
   const [debateReplayResult, setDebateReplayResult] = useState<DebateReplayResponse | null>(null)
   const [debateRuns, setDebateRuns] = useState<DebateRunSummary[]>([])
+  const [debateProgress, setDebateProgress] = useState<{
+    round: string
+    role: string
+    turnIndex: number
+    totalTurns: number
+  } | null>(null)
 
   const [appSettings, setAppSettings] = useState<AppSettings>({
     profiles: [],
@@ -1110,6 +1117,39 @@ function App() {
   }, [debateProvider, debateProviderOptions])
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<DebateProgress>('debate-progress', (event) => {
+          const payload = event.payload
+          setDebateProgress({
+            round: payload.round,
+            role: payload.role,
+            turnIndex: payload.turnIndex,
+            totalTurns: payload.totalTurns,
+          })
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn()
+          return
+        }
+        unlisten = fn
+      })
+      .catch(() => {
+        // Ignore event bridge setup failures.
+      })
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!centralHome) {
       return
     }
@@ -1229,6 +1269,7 @@ function App() {
       .filter(Boolean)
 
     setDebateBusy(true)
+    setDebateProgress(null)
     pushNotice(
       'info',
       t(
@@ -1295,6 +1336,7 @@ function App() {
       pushNotice('error', t(`Debate failed: ${String(error)}`, `辯論失敗：${String(error)}`))
     } finally {
       setDebateBusy(false)
+      setDebateProgress(null)
     }
   }, [
     centralHome,
@@ -3000,7 +3042,14 @@ function App() {
               {t('Copy Final Packet', '複製 Final Packet')}
             </button>
           </div>
-          {debateBusy ? (
+          {debateBusy && debateProgress ? (
+            <p className="muted">
+              {t(
+                `${debateProgress.round} — ${debateProgress.role} (${debateProgress.turnIndex}/${debateProgress.totalTurns})`,
+                `${debateProgress.round} — ${debateProgress.role} (${debateProgress.turnIndex}/${debateProgress.totalTurns})`,
+              )}
+            </p>
+          ) : debateBusy ? (
             <p className="muted">{t('Debate is running in background...', '辯論正在背景執行中...')}</p>
           ) : null}
 

@@ -354,3 +354,12 @@ export type DebateRunSummary = {
   createdAt: string
   artifactsRoot: string
 }
+
+export type DebateProgress = {
+  runId: string
+  round: string
+  role: string
+  turnIndex: number
+  totalTurns: number
+  status: 'started' | 'completed' | 'failed' | string
+}

@@ -18,6 +18,7 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
+use tauri::Emitter;
 
 pub(crate) const RECORD_TYPE_DIRS: [(&str, &str); 5] = [
     ("decision", "decisions"),
@@ -526,6 +527,17 @@ pub struct DebateRunSummary {
     degraded: bool,
     created_at: String,
     artifacts_root: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DebateProgress {
+    run_id: String,
+    round: String,
+    role: String,
+    turn_index: usize,
+    total_turns: usize,
+    status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1550,6 +1562,7 @@ pub(crate) fn notebooklm_ask(
 }
 
 pub(crate) async fn run_debate_mode(
+    app: tauri::AppHandle,
     lock: tauri::State<'_, DebateLock>,
     central_home: String,
     request: DebateModeRequest,
@@ -1574,9 +1587,12 @@ pub(crate) async fn run_debate_mode(
     }
 
     let home = normalized_home(&central_home)?;
-    let result = tauri::async_runtime::spawn_blocking(move || run_debate_mode_internal(&home, request))
-        .await
-        .map_err(|error| format!("Debate worker join error: {error}"));
+    let app_for_worker = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_debate_mode_internal_with_app(Some(app_for_worker), &home, request)
+    })
+    .await
+    .map_err(|error| format!("Debate worker join error: {error}"));
 
     // ALWAYS clear lock, even on error.
     if let Ok(mut guard) = lock.0.lock() {
@@ -2013,6 +2029,14 @@ fn run_claude_analysis(
 }
 
 fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
+    run_debate_mode_internal_with_app(None, central_home, request)
+}
+
+fn run_debate_mode_internal_with_app(
+    app: Option<tauri::AppHandle>,
+    central_home: &Path,
+    request: DebateModeRequest,
+) -> Result<DebateModeResponse, String> {
     let settings = load_settings();
     let provider_registry = DebateProviderRegistry::from_settings(&settings);
     let normalized = normalize_debate_request(request, &provider_registry)?;
@@ -2057,6 +2081,8 @@ fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> 
         }),
     )?;
 
+    let total_turns = normalized.participants.len() * DebateRound::all().len();
+    let mut turn_index = 0usize;
     let mut rounds: Vec<DebateRoundArtifact> = Vec::new();
     for round in DebateRound::all() {
         let next_state = match round {
@@ -2075,6 +2101,20 @@ fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> 
             } else {
                 None
             };
+            turn_index += 1;
+            if let Some(app_handle) = app.as_ref() {
+                let _ = app_handle.emit(
+                    "debate-progress",
+                    DebateProgress {
+                        run_id: run_id.clone(),
+                        round: round.as_str().to_string(),
+                        role: participant.role.as_str().to_string(),
+                        turn_index,
+                        total_turns,
+                        status: "started".to_string(),
+                    },
+                );
+            }
             let turn = execute_debate_turn(
                 participant,
                 round,
@@ -2084,6 +2124,23 @@ fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> 
                 normalized.max_turn_seconds,
                 normalized.max_turn_tokens,
             );
+            if let Some(app_handle) = app.as_ref() {
+                let _ = app_handle.emit(
+                    "debate-progress",
+                    DebateProgress {
+                        run_id: run_id.clone(),
+                        round: round.as_str().to_string(),
+                        role: participant.role.as_str().to_string(),
+                        turn_index,
+                        total_turns,
+                        status: if turn.status == "ok" {
+                            "completed".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                    },
+                );
+            }
 
             if turn.status != "ok" {
                 degraded = true;

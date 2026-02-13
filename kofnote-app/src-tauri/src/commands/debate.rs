@@ -5,11 +5,12 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn run_debate_mode(
+    app: tauri::AppHandle,
     lock: State<'_, DebateLock>,
     central_home: String,
     request: DebateModeRequest,
 ) -> Result<DebateModeResponse, String> {
-    crate::types::run_debate_mode(lock, central_home, request).await
+    crate::types::run_debate_mode(app, lock, central_home, request).await
 }
 
 #[tauri::command]
