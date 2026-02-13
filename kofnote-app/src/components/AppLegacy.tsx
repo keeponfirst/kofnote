@@ -490,6 +490,9 @@ function App() {
   const [debateOutputType, setDebateOutputType] = useState<DebateOutputType>('decision')
   const [debateProvider, setDebateProvider] = useState('local')
   const [debateModel, setDebateModel] = useState('')
+  const [debateAdvancedMode, setDebateAdvancedMode] = useState(false)
+  const [debatePerRoleProvider, setDebatePerRoleProvider] = useState<Record<string, string>>({})
+  const [debatePerRoleModel, setDebatePerRoleModel] = useState<Record<string, string>>({})
   const [debateWritebackType, setDebateWritebackType] = useState<'decision' | 'worklog'>('decision')
   const [debateMaxTurnSeconds, setDebateMaxTurnSeconds] = useState(35)
   const [debateMaxTurnTokens, setDebateMaxTurnTokens] = useState(900)
@@ -1237,8 +1240,12 @@ function App() {
       const providerModel = debateProvider === 'local' ? 'local-heuristic-v1' : debateModel.trim()
       const participants = DEBATE_ROLES.map((role) => ({
         role,
-        modelProvider: debateProvider,
-        modelName: providerModel,
+        modelProvider: debateAdvancedMode
+          ? (debatePerRoleProvider[role] || debateProvider)
+          : debateProvider,
+        modelName: debateAdvancedMode
+          ? (debatePerRoleModel[role] || providerModel)
+          : providerModel,
       }))
 
       const result = await runDebateMode({
@@ -1295,8 +1302,11 @@ function App() {
     debateConstraintsText,
     debateMaxTurnSeconds,
     debateMaxTurnTokens,
+    debateAdvancedMode,
     debateModel,
     debateOutputType,
+    debatePerRoleModel,
+    debatePerRoleProvider,
     debateProblem,
     debateProvider,
     debateWritebackType,
@@ -2880,6 +2890,15 @@ function App() {
               <small className="muted">{debateProviderRuntimeHint}</small>
             </label>
 
+            <label className="checkbox-field span-2">
+              <input
+                type="checkbox"
+                checked={debateAdvancedMode}
+                onChange={(event) => setDebateAdvancedMode(event.target.checked)}
+              />
+              {t('Advanced: per-role provider', '進階：每角色個別 Provider')}
+            </label>
+
             <label>
               {t('Model', '模型')}
               <input
@@ -2889,6 +2908,38 @@ function App() {
               />
               <small className="muted">{debateModelHint}</small>
             </label>
+
+            {debateAdvancedMode
+              ? DEBATE_ROLES.map((role) => (
+                  <div key={role} className="span-2 form-grid two-col-grid">
+                    <label>
+                      {role}
+                      <select
+                        value={debatePerRoleProvider[role] || debateProvider}
+                        onChange={(event) =>
+                          setDebatePerRoleProvider((prev) => ({ ...prev, [role]: event.target.value }))
+                        }
+                      >
+                        {debateProviderOptions.map((providerId) => (
+                          <option key={providerId} value={providerId}>
+                            {debateProviderLabel(providerId)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      {t('Model', '模型')}
+                      <input
+                        value={debatePerRoleModel[role] || ''}
+                        placeholder={debateModelDefault}
+                        onChange={(event) =>
+                          setDebatePerRoleModel((prev) => ({ ...prev, [role]: event.target.value }))
+                        }
+                      />
+                    </label>
+                  </div>
+                ))
+              : null}
 
             <label>
               {t('Writeback Type', '寫回類型')}
