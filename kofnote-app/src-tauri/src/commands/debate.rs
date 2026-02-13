@@ -1,4 +1,6 @@
-use crate::types::{DebateLock, DebateModeRequest, DebateModeResponse, DebateReplayResponse};
+use crate::types::{
+    DebateLock, DebateModeRequest, DebateModeResponse, DebateReplayResponse, DebateRunSummary,
+};
 use tauri::State;
 
 #[tauri::command]
@@ -16,4 +18,9 @@ pub async fn replay_debate_mode(
     run_id: String,
 ) -> Result<DebateReplayResponse, String> {
     crate::types::replay_debate_mode(central_home, run_id).await
+}
+
+#[tauri::command]
+pub fn list_debate_runs(central_home: String) -> Result<Vec<DebateRunSummary>, String> {
+    crate::types::list_debate_runs(central_home)
 }

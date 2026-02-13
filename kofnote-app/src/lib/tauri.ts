@@ -6,6 +6,7 @@ import type {
   DebateModeRequest,
   DebateModeResponse,
   DebateReplayResponse,
+  DebateRunSummary,
   DashboardStats,
   ExportReportResult,
   HealthDiagnostics,
@@ -568,8 +569,21 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
               sqlIndexed: false,
               issues: [`Missing run in mock runtime: ${runId}`],
             },
-          }
+      }
       return clone(response) as T
+    }
+    case 'list_debate_runs': {
+      const summaries: DebateRunSummary[] = Object.values(mockState.debateRuns).map((run) => ({
+        runId: run.runId,
+        problem: run.finalPacket.problem.slice(0, 120),
+        provider: run.finalPacket.participants[0]?.modelProvider ?? 'local',
+        outputType: run.finalPacket.outputType,
+        degraded: run.degraded,
+        createdAt: run.finalPacket.timestamps.startedAt,
+        artifactsRoot: run.artifactsRoot,
+      }))
+      summaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      return clone(summaries) as T
     }
     case 'export_markdown_report': {
       const title = String(args.title ?? 'KOF Note Report')
@@ -965,6 +979,10 @@ export async function replayDebateMode(args: {
   runId: string
 }): Promise<DebateReplayResponse> {
   return invokeCommand<DebateReplayResponse>('replay_debate_mode', args)
+}
+
+export async function listDebateRuns(args: { centralHome: string }): Promise<DebateRunSummary[]> {
+  return invokeCommand<DebateRunSummary[]>('list_debate_runs', args)
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {

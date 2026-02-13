@@ -343,3 +343,13 @@ export type DebateReplayResponse = {
   writebackRecord?: RecordItem | null
   consistency: DebateReplayConsistency
 }
+
+export type DebateRunSummary = {
+  runId: string
+  problem: string
+  provider: string
+  outputType: string
+  degraded: boolean
+  createdAt: string
+  artifactsRoot: string
+}

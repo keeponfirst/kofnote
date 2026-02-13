@@ -23,6 +23,7 @@ import {
   hasClaudeApiKey,
   hasGeminiApiKey,
   hasNotionApiKey,
+  listDebateRuns,
   hasOpenaiApiKey,
   listLogs,
   listRecords,
@@ -69,6 +70,7 @@ import type {
   DebateModeResponse,
   DebateOutputType,
   DebateReplayResponse,
+  DebateRunSummary,
   DashboardStats,
   HealthDiagnostics,
   HomeFingerprint,
@@ -493,6 +495,7 @@ function App() {
   const [debateRunId, setDebateRunId] = useState('')
   const [debateResult, setDebateResult] = useState<DebateModeResponse | null>(null)
   const [debateReplayResult, setDebateReplayResult] = useState<DebateReplayResponse | null>(null)
+  const [debateRuns, setDebateRuns] = useState<DebateRunSummary[]>([])
 
   const [appSettings, setAppSettings] = useState<AppSettings>({
     profiles: [],
@@ -933,6 +936,20 @@ function App() {
     [],
   )
 
+  const refreshDebateRuns = useCallback(
+    async (home: string) => {
+      if (!home.trim()) {
+        setDebateRuns([])
+        return []
+      }
+
+      const runs = await listDebateRuns({ centralHome: home })
+      setDebateRuns(runs)
+      return runs
+    },
+    [],
+  )
+
   const applySearch = useCallback(async () => {
     if (!centralHome) {
       return
@@ -976,7 +993,7 @@ function App() {
         setCentralHomeInput(resolved.centralHome)
         localStorage.setItem(LOCAL_STORAGE_KEY, resolved.centralHome)
 
-        const data = await refreshCore(resolved.centralHome)
+        const [data] = await Promise.all([refreshCore(resolved.centralHome), refreshDebateRuns(resolved.centralHome)])
         setDisplayedRecords(data.records)
         setSearchMeta(null)
 
@@ -998,7 +1015,7 @@ function App() {
         )
       })
     },
-    [centralHomeInput, pushNotice, refreshCore, t, withBusy],
+    [centralHomeInput, pushNotice, refreshCore, refreshDebateRuns, t, withBusy],
   )
 
   const handlePickCentralHome = useCallback(async () => {
@@ -1240,6 +1257,7 @@ function App() {
       setDebateReplayResult(null)
       setDebateRunId(result.runId)
       setAiResult(JSON.stringify(result.finalPacket, null, 2))
+      await refreshDebateRuns(centralHome)
 
       if (result.degraded) {
         const hasCodexCliError = result.errorCodes.some((item) => item.includes('DEBATE_ERR_PROVIDER_CODEX_CLI'))
@@ -1281,11 +1299,12 @@ function App() {
     debateProblem,
     debateProvider,
     debateWritebackType,
+    refreshDebateRuns,
     pushNotice,
     t,
   ])
 
-  const handleReplayDebate = useCallback(async () => {
+  const replayDebateByRunId = useCallback(async (runId: string) => {
     if (!centralHome) {
       pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
       return
@@ -1294,7 +1313,7 @@ function App() {
       pushNotice('info', t('Debate is still running.', '辯論仍在執行中。'))
       return
     }
-    if (!debateRunId.trim()) {
+    if (!runId.trim()) {
       pushNotice('error', t('Run ID cannot be empty.', 'Run ID 不可為空。'))
       return
     }
@@ -1303,7 +1322,7 @@ function App() {
     try {
       const replay = await replayDebateMode({
         centralHome,
-        runId: debateRunId.trim(),
+        runId: runId.trim(),
       })
       setDebateReplayResult(replay)
       setAiResult(JSON.stringify(replay.finalPacket, null, 2))
@@ -1324,7 +1343,19 @@ function App() {
     } finally {
       setDebateBusy(false)
     }
-  }, [centralHome, debateBusy, debateRunId, pushNotice, t])
+  }, [centralHome, debateBusy, pushNotice, t])
+
+  const handleReplayDebate = useCallback(async () => {
+    await replayDebateByRunId(debateRunId)
+  }, [debateRunId, replayDebateByRunId])
+
+  const handleSelectDebateRun = useCallback(
+    async (runId: string) => {
+      setDebateRunId(runId)
+      await replayDebateByRunId(runId)
+    },
+    [replayDebateByRunId],
+  )
 
   const handleSaveApiKey = useCallback(async () => {
     if (!openaiKeyDraft.trim()) {
@@ -2759,6 +2790,45 @@ function App() {
         </div>
 
         <div className="panel">
+          <div className="panel-head-inline">
+            <h3>{t('Debate History', '辯論歷史')}</h3>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => void refreshDebateRuns(centralHome)}
+              disabled={!centralHome || busy || debateBusy}
+            >
+              {t('Refresh History', '刷新歷史')}
+            </button>
+          </div>
+          <div className="record-list">
+            {debateRuns.map((item) => {
+              const selected = debateRunId === item.runId
+              const shortProblem =
+                item.problem.length > 60 ? `${item.problem.slice(0, 60).trimEnd()}...` : item.problem
+              return (
+                <button
+                  type="button"
+                  key={item.runId}
+                  className={selected ? 'record-item selected' : 'record-item'}
+                  onClick={() => void handleSelectDebateRun(item.runId)}
+                >
+                  <span className="record-meta">
+                    <strong>{item.runId}</strong>
+                    <small>
+                      {item.provider} · {item.outputType} · {item.createdAt}
+                      {item.degraded ? ` · ${t('degraded', '降級')}` : ''}
+                    </small>
+                  </span>
+                  <span className="record-title">{shortProblem || '-'}</span>
+                </button>
+              )
+            })}
+            {debateRuns.length === 0 ? (
+              <p className="muted">{t('No debate history found.', '尚無辯論歷史。')}</p>
+            ) : null}
+          </div>
+
           <div className="panel-head-inline">
             <h3>{t('Debate Mode v0.1', '辯論模式 v0.1')}</h3>
             <span className="muted">{t('Run fixed 5-role / 3-round protocol.', '執行固定 5 角色 / 3 回合流程。')}</span>

@@ -515,6 +515,18 @@ pub struct DebateReplayResponse {
     consistency: DebateReplayConsistency,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebateRunSummary {
+    run_id: String,
+    problem: String,
+    provider: String,
+    output_type: String,
+    degraded: bool,
+    created_at: String,
+    artifacts_root: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DebateRuntimeParticipant {
     role: DebateRole,
@@ -1582,6 +1594,80 @@ pub(crate) async fn replay_debate_mode(
     tauri::async_runtime::spawn_blocking(move || replay_debate_mode_internal(&home, &run_id))
         .await
         .map_err(|error| format!("Debate replay worker join error: {error}"))?
+}
+
+pub(crate) fn list_debate_runs(central_home: String) -> Result<Vec<DebateRunSummary>, String> {
+    let home = normalized_home(&central_home)?;
+    list_debate_runs_internal(&home)
+}
+
+fn list_debate_runs_internal(central_home: &Path) -> Result<Vec<DebateRunSummary>, String> {
+    let debates_dir = central_home.join("records").join("debates");
+    if !debates_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut runs = Vec::new();
+    let entries = fs::read_dir(&debates_dir).map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let run_id = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let request_path = path.join("request.json");
+        if !request_path.exists() {
+            continue;
+        }
+
+        let request_text = fs::read_to_string(&request_path).unwrap_or_default();
+        let request_value: Value = serde_json::from_str(&request_text).unwrap_or_default();
+
+        let problem = request_value
+            .get("problem")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect::<String>();
+        let provider = request_value
+            .get("participants")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("modelProvider"))
+            .and_then(Value::as_str)
+            .unwrap_or("local")
+            .to_string();
+        let output_type = request_value
+            .get("outputType")
+            .and_then(Value::as_str)
+            .unwrap_or("decision")
+            .to_string();
+
+        let consensus_path = path.join("consensus.json");
+        let degraded = if consensus_path.exists() {
+            let text = fs::read_to_string(&consensus_path).unwrap_or_default();
+            let value: Value = serde_json::from_str(&text).unwrap_or_default();
+            value.get("degraded").and_then(Value::as_bool).unwrap_or(false)
+        } else {
+            false
+        };
+
+        let created_at = file_mtime_iso(&request_path);
+        runs.push(DebateRunSummary {
+            run_id,
+            problem,
+            provider,
+            output_type,
+            degraded,
+            created_at,
+            artifacts_root: path.to_string_lossy().to_string(),
+        });
+    }
+
+    runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(runs)
 }
 
 fn normalized_home(input: &str) -> Result<PathBuf, String> {

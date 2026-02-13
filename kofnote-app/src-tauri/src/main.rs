@@ -25,6 +25,7 @@ fn main() {
             commands::ai::run_ai_analysis,
             commands::debate::run_debate_mode,
             commands::debate::replay_debate_mode,
+            commands::debate::list_debate_runs,
             commands::export::export_markdown_report,
             commands::health::get_home_fingerprint,
             commands::health::get_health_diagnostics,
