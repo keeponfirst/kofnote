@@ -90,6 +90,7 @@ type SearchMeta = {
   indexed: boolean
   total: number
   tookMs: number
+  snippets: Record<string, string>
 }
 
 type RecordFormState = {
@@ -976,7 +977,7 @@ function App() {
     })
 
     setDisplayedRecords(result.records)
-    setSearchMeta({ indexed: result.indexed, total: result.total, tookMs: result.tookMs })
+    setSearchMeta({ indexed: result.indexed, total: result.total, tookMs: result.tookMs, snippets: result.snippets })
     setVisibleCount(200)
   }, [allRecords, centralHome, recordDateFrom, recordDateTo, recordFilterType, recordKeyword])
 
@@ -2426,6 +2427,7 @@ function App() {
             <div className="record-list">
               {visibleRecords.map((item) => {
                 const selected = item.jsonPath === selectedRecordPath
+                const snippet = item.jsonPath ? searchMeta?.snippets[item.jsonPath] : undefined
                 return (
                   <button
                     type="button"
@@ -2440,6 +2442,9 @@ function App() {
                     <p>
                       <strong>{item.recordType}</strong> | {item.title}
                     </p>
+                    {snippet ? (
+                      <p className="search-snippet" dangerouslySetInnerHTML={{ __html: snippet }} />
+                    ) : null}
                   </button>
                 )
               })}

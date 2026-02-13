@@ -1054,6 +1054,20 @@ option {
   box-shadow: inset 0 0 0 1px rgba(78, 207, 255, 0.32);
 }
 
+.search-snippet {
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  margin: 2px 0 0;
+  line-height: 1.4;
+}
+
+.search-snippet mark {
+  background: rgba(24, 230, 255, 0.25);
+  color: var(--accent-cyan);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
 .log-item strong {
   text-transform: uppercase;
   letter-spacing: 0.05em;

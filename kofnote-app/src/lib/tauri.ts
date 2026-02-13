@@ -488,11 +488,31 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
         })
       }
       const page = filtered.slice(offset, offset + limit)
+      const snippets: Record<string, string> = {}
+      if (query) {
+        for (const item of page) {
+          if (!item.jsonPath) {
+            continue
+          }
+          const merged = `${item.title} ${item.finalBody} ${item.sourceText}`
+          const lower = merged.toLowerCase()
+          const idx = lower.indexOf(query)
+          if (idx < 0) {
+            continue
+          }
+          const start = Math.max(0, idx - 48)
+          const end = Math.min(merged.length, idx + query.length + 96)
+          const excerpt = merged.slice(start, end)
+          const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          snippets[item.jsonPath] = excerpt.replace(new RegExp(escaped, 'ig'), '<mark>$&</mark>')
+        }
+      }
       const result: SearchResult = {
         records: clone(page),
         total: filtered.length,
         indexed: true,
         tookMs: 9,
+        snippets,
       }
       return result as T
     }

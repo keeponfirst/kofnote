@@ -1,6 +1,7 @@
 use crate::{types::{Record, SEARCH_DB_FILE}, util::*};
 use chrono::Local;
 use rusqlite::{params, params_from_iter, Connection};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -155,7 +156,7 @@ pub(crate) fn search_records_in_index(
     date_to: Option<&str>,
     limit: usize,
     offset: usize,
-) -> Result<(Vec<Record>, usize), String> {
+) -> Result<(Vec<Record>, usize, HashMap<String, String>), String> {
     let conn = open_index_connection(central_home)?;
     ensure_index_schema(&conn)?;
 
@@ -201,7 +202,8 @@ pub(crate) fn search_records_in_index(
             notion_sync_status,
             notion_page_id,
             notion_url,
-            notion_error
+            notion_error,
+            snippet(records_fts, 2, '<mark>', '</mark>', '...', 32) AS snippet
         FROM records_fts
         {where_sql}
         ORDER BY bm25(records_fts), created_at DESC
@@ -212,7 +214,7 @@ pub(crate) fn search_records_in_index(
     let mut rows = stmt
         .query_map(params_from_iter(bindings.iter()), |row| {
             let tags_raw: String = row.get(6)?;
-            Ok(Record {
+            let record = Record {
                 json_path: Some(row.get::<_, String>(0)?),
                 md_path: Some(row.get::<_, String>(1)?),
                 record_type: row.get(2)?,
@@ -229,16 +231,25 @@ pub(crate) fn search_records_in_index(
                 notion_last_synced_at: None,
                 notion_last_edited_time: None,
                 notion_last_synced_hash: None,
-            })
+            };
+            let snippet: String = row.get::<_, String>(13).unwrap_or_default();
+            Ok((record, snippet))
         })
         .map_err(|error| error.to_string())?;
 
     let mut records = Vec::new();
+    let mut snippets = HashMap::new();
     for row in rows.by_ref() {
-        records.push(row.map_err(|error| error.to_string())?);
+        let (record, snippet) = row.map_err(|error| error.to_string())?;
+        if let Some(json_path) = &record.json_path {
+            if !snippet.trim().is_empty() {
+                snippets.insert(json_path.clone(), snippet);
+            }
+        }
+        records.push(record);
     }
 
-    Ok((records, total))
+    Ok((records, total, snippets))
 }
 
 pub(crate) fn get_index_count(central_home: &Path) -> Result<usize, String> {

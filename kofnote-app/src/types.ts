@@ -77,6 +77,7 @@ export type SearchResult = {
   total: number
   indexed: boolean
   tookMs: number
+  snippets: Record<string, string>
 }
 
 export type RebuildIndexResult = {

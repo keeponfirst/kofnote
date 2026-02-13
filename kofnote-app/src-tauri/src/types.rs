@@ -137,6 +137,7 @@ pub struct SearchResult {
     total: usize,
     indexed: bool,
     took_ms: u128,
+    snippets: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -968,7 +969,7 @@ pub(crate) fn search_records(
 
     let use_index = !query_text.is_empty();
 
-    let (records, total, indexed) = if use_index {
+    let (records, total, snippets, indexed) = if use_index {
         if !index_db_path(&home).exists() {
             let _ = rebuild_index(&home, &load_records(&home)?);
         }
@@ -982,7 +983,7 @@ pub(crate) fn search_records(
             limit,
             offset,
         ) {
-            Ok(result) => (result.0, result.1, true),
+            Ok(result) => (result.0, result.1, result.2, true),
             Err(_) => {
                 let all = load_records(&home)?;
                 let records = search_records_in_memory(
@@ -1001,7 +1002,7 @@ pub(crate) fn search_records(
                     date_from.as_deref(),
                     date_to.as_deref(),
                 );
-                (records, total, false)
+                (records, total, HashMap::new(), false)
             }
         }
     } else {
@@ -1016,7 +1017,7 @@ pub(crate) fn search_records(
             offset,
         );
         let total = count_records_in_memory(&all, "", record_type.as_deref(), date_from.as_deref(), date_to.as_deref());
-        (filtered, total, false)
+        (filtered, total, HashMap::new(), false)
     };
 
     Ok(SearchResult {
@@ -1024,6 +1025,7 @@ pub(crate) fn search_records(
         total,
         indexed,
         took_ms: started.elapsed().as_millis(),
+        snippets,
     })
 }
 
