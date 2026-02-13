@@ -2028,6 +2028,7 @@ fn run_claude_analysis(
     crate::providers::claude::run_claude_text_completion(model, &merged, 60, 4096)
 }
 
+#[cfg(test)]
 fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
     run_debate_mode_internal_with_app(None, central_home, request)
 }
