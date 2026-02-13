@@ -1,8 +1,11 @@
+use crate::storage::index::*;
+use crate::storage::records::*;
+use crate::storage::settings_io::*;
 use crate::util::*;
 use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use keyring::{Entry, Error as KeyringError};
 use reqwest::blocking::Client;
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
@@ -52,22 +55,22 @@ pub struct ResolvedHome {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Record {
-    record_type: String,
-    title: String,
-    created_at: String,
-    source_text: String,
-    final_body: String,
-    tags: Vec<String>,
-    date: Option<String>,
-    notion_page_id: Option<String>,
-    notion_url: Option<String>,
-    notion_sync_status: String,
-    notion_error: Option<String>,
-    notion_last_synced_at: Option<String>,
-    notion_last_edited_time: Option<String>,
-    notion_last_synced_hash: Option<String>,
-    json_path: Option<String>,
-    md_path: Option<String>,
+    pub(crate) record_type: String,
+    pub(crate) title: String,
+    pub(crate) created_at: String,
+    pub(crate) source_text: String,
+    pub(crate) final_body: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) date: Option<String>,
+    pub(crate) notion_page_id: Option<String>,
+    pub(crate) notion_url: Option<String>,
+    pub(crate) notion_sync_status: String,
+    pub(crate) notion_error: Option<String>,
+    pub(crate) notion_last_synced_at: Option<String>,
+    pub(crate) notion_last_edited_time: Option<String>,
+    pub(crate) notion_last_synced_hash: Option<String>,
+    pub(crate) json_path: Option<String>,
+    pub(crate) md_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,14 +95,14 @@ pub struct RecordPayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
-    timestamp: String,
-    event_id: String,
-    task_intent: String,
-    status: String,
-    title: String,
-    data: Value,
-    raw: Value,
-    json_path: Option<String>,
+    pub(crate) timestamp: String,
+    pub(crate) event_id: String,
+    pub(crate) task_intent: String,
+    pub(crate) status: String,
+    pub(crate) title: String,
+    pub(crate) data: Value,
+    pub(crate) raw: Value,
+    pub(crate) json_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1650,300 +1653,6 @@ fn compute_dashboard_stats(records: &[Record], logs: &[LogEntry]) -> DashboardSt
         recent_daily_counts,
         pending_sync_count,
     }
-}
-
-pub(crate) fn load_records(central_home: &Path) -> Result<Vec<Record>, String> {
-    let mut records: Vec<Record> = Vec::new();
-    let records_root = central_home.join("records");
-    if !records_root.exists() {
-        return Ok(records);
-    }
-
-    for (record_type, folder) in RECORD_TYPE_DIRS {
-        let dir = records_root.join(folder);
-        if !dir.exists() {
-            continue;
-        }
-
-        let entries = fs::read_dir(&dir).map_err(|error| error.to_string())?;
-        for entry in entries {
-            let path = match entry {
-                Ok(item) => item.path(),
-                Err(_) => continue,
-            };
-
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-
-            let content = match fs::read_to_string(&path) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-
-            let value: Value = match serde_json::from_str(&content) {
-                Ok(parsed) => parsed,
-                Err(_) => continue,
-            };
-
-            let fallback_type = Some(record_type.to_string());
-            let record = record_from_value(
-                &value,
-                Some(path.clone()),
-                Some(path.with_extension("md")),
-                fallback_type,
-            );
-            records.push(record);
-        }
-    }
-
-    records.sort_by(|a, b| compare_iso_desc(&a.created_at, &b.created_at));
-    Ok(records)
-}
-
-pub(crate) fn load_logs(central_home: &Path) -> Result<Vec<LogEntry>, String> {
-    let logs_root = central_home.join(".agentic").join("logs");
-    let mut logs: Vec<LogEntry> = Vec::new();
-
-    if !logs_root.exists() {
-        return Ok(logs);
-    }
-
-    let entries = fs::read_dir(&logs_root).map_err(|error| error.to_string())?;
-    for entry in entries {
-        let path = match entry {
-            Ok(item) => item.path(),
-            Err(_) => continue,
-        };
-
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&path) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-
-        let raw: Value = match serde_json::from_str(&content) {
-            Ok(parsed) => parsed,
-            Err(_) => continue,
-        };
-
-        let meta = raw
-            .get("meta")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let task = raw
-            .get("task")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let data = raw.get("data").cloned().unwrap_or_else(|| json!({}));
-
-        let timestamp = meta
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_else(|| file_mtime_iso(&path));
-        let event_id = meta
-            .get("event_id")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let task_intent = task
-            .get("intent")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let status = task
-            .get("status")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_default();
-
-        let title = data
-            .get("title")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .unwrap_or_default();
-
-        logs.push(LogEntry {
-            timestamp,
-            event_id,
-            task_intent,
-            status,
-            title,
-            data,
-            raw,
-            json_path: Some(path.to_string_lossy().to_string()),
-        });
-    }
-
-    logs.sort_by(|a, b| compare_iso_desc(&a.timestamp, &b.timestamp));
-    Ok(logs)
-}
-
-pub(crate) fn rebuild_index(central_home: &Path, records: &[Record]) -> Result<usize, String> {
-    let mut conn = open_index_connection(central_home)?;
-    ensure_index_schema(&conn)?;
-
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM records_fts", [])
-        .map_err(|error| error.to_string())?;
-
-    {
-        let mut stmt = tx
-            .prepare(
-                "INSERT INTO records_fts (
-                    json_path,
-                    md_path,
-                    record_type,
-                    title,
-                    final_body,
-                    source_text,
-                    tags,
-                    created_at,
-                    date,
-                    notion_sync_status,
-                    notion_page_id,
-                    notion_url,
-                    notion_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .map_err(|error| error.to_string())?;
-
-        for record in records {
-            stmt.execute(params![
-                record.json_path.clone().unwrap_or_default(),
-                record.md_path.clone().unwrap_or_default(),
-                record.record_type,
-                record.title,
-                record.final_body,
-                record.source_text,
-                record.tags.join(","),
-                record.created_at,
-                record.date.clone().unwrap_or_default(),
-                record.notion_sync_status,
-                record.notion_page_id.clone().unwrap_or_default(),
-                record.notion_url.clone().unwrap_or_default(),
-                record.notion_error.clone().unwrap_or_default(),
-            ])
-            .map_err(|error| error.to_string())?;
-        }
-    }
-
-    tx.execute(
-        "INSERT INTO records_index_meta (key, value) VALUES ('updatedAt', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![Local::now().to_rfc3339()],
-    )
-    .map_err(|error| error.to_string())?;
-
-    tx.execute(
-        "INSERT INTO records_index_meta (key, value) VALUES ('recordCount', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![records.len().to_string()],
-    )
-    .map_err(|error| error.to_string())?;
-
-    tx.commit().map_err(|error| error.to_string())?;
-    Ok(records.len())
-}
-
-pub(crate) fn search_records_in_index(
-    central_home: &Path,
-    query: &str,
-    record_type: Option<&str>,
-    date_from: Option<&str>,
-    date_to: Option<&str>,
-    limit: usize,
-    offset: usize,
-) -> Result<(Vec<Record>, usize), String> {
-    let conn = open_index_connection(central_home)?;
-    ensure_index_schema(&conn)?;
-
-    let mut where_clauses = Vec::new();
-    let mut bindings = Vec::new();
-
-    where_clauses.push("records_fts MATCH ?".to_string());
-    bindings.push(query.to_string());
-
-    if let Some(record_type) = record_type {
-        where_clauses.push("record_type = ?".to_string());
-        bindings.push(record_type.to_string());
-    }
-
-    if let Some(date_from) = date_from {
-        where_clauses.push("substr(created_at, 1, 10) >= ?".to_string());
-        bindings.push(date_from.to_string());
-    }
-
-    if let Some(date_to) = date_to {
-        where_clauses.push("substr(created_at, 1, 10) <= ?".to_string());
-        bindings.push(date_to.to_string());
-    }
-
-    let where_sql = format!("WHERE {}", where_clauses.join(" AND "));
-
-    let count_sql = format!("SELECT COUNT(*) FROM records_fts {where_sql}");
-    let total: usize = conn
-        .query_row(&count_sql, params_from_iter(bindings.iter()), |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-
-    let select_sql = format!(
-        "SELECT
-            json_path,
-            md_path,
-            record_type,
-            title,
-            final_body,
-            source_text,
-            tags,
-            created_at,
-            date,
-            notion_sync_status,
-            notion_page_id,
-            notion_url,
-            notion_error
-        FROM records_fts
-        {where_sql}
-        ORDER BY bm25(records_fts), created_at DESC
-        LIMIT {limit} OFFSET {offset}"
-    );
-
-    let mut stmt = conn.prepare(&select_sql).map_err(|error| error.to_string())?;
-    let mut rows = stmt
-        .query_map(params_from_iter(bindings.iter()), |row| {
-            let tags_raw: String = row.get(6)?;
-            Ok(Record {
-                json_path: Some(row.get::<_, String>(0)?),
-                md_path: Some(row.get::<_, String>(1)?),
-                record_type: row.get(2)?,
-                title: row.get(3)?,
-                final_body: row.get(4)?,
-                source_text: row.get(5)?,
-                tags: parse_tags(&tags_raw),
-                created_at: row.get(7)?,
-                date: option_non_empty(row.get::<_, String>(8)?),
-                notion_sync_status: row.get(9)?,
-                notion_page_id: option_non_empty(row.get::<_, String>(10)?),
-                notion_url: option_non_empty(row.get::<_, String>(11)?),
-                notion_error: option_non_empty(row.get::<_, String>(12)?),
-                notion_last_synced_at: None,
-                notion_last_edited_time: None,
-                notion_last_synced_hash: None,
-            })
-        })
-        .map_err(|error| error.to_string())?;
-
-    let mut records = Vec::new();
-    for row in rows.by_ref() {
-        records.push(row.map_err(|error| error.to_string())?);
-    }
-
-    Ok((records, total))
 }
 
 fn search_records_in_memory(
@@ -3863,343 +3572,6 @@ fn render_report_markdown(
     lines.join("\n")
 }
 
-pub(crate) fn open_index_connection(central_home: &Path) -> Result<Connection, String> {
-    let path = index_db_path(central_home);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    Connection::open(path).map_err(|error| error.to_string())
-}
-
-pub(crate) fn ensure_index_schema(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
-            json_path UNINDEXED,
-            md_path UNINDEXED,
-            record_type,
-            title,
-            final_body,
-            source_text,
-            tags,
-            created_at,
-            date,
-            notion_sync_status,
-            notion_page_id UNINDEXED,
-            notion_url UNINDEXED,
-            notion_error UNINDEXED
-         );
-         CREATE TABLE IF NOT EXISTS records_index_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS debate_runs (
-            run_id TEXT PRIMARY KEY,
-            output_type TEXT NOT NULL,
-            problem TEXT NOT NULL,
-            consensus_score REAL NOT NULL,
-            confidence_score REAL NOT NULL,
-            selected_option TEXT NOT NULL,
-            degraded INTEGER NOT NULL DEFAULT 0,
-            started_at TEXT NOT NULL,
-            finished_at TEXT NOT NULL,
-            artifacts_root TEXT NOT NULL,
-            final_packet_path TEXT NOT NULL,
-            writeback_json_path TEXT
-         );
-         CREATE TABLE IF NOT EXISTS debate_turns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-            round_number INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            model_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            claim TEXT NOT NULL,
-            rationale TEXT NOT NULL,
-            challenges_json TEXT NOT NULL,
-            revisions_json TEXT NOT NULL,
-            error_code TEXT,
-            error_message TEXT,
-            duration_ms INTEGER NOT NULL DEFAULT 0,
-            started_at TEXT NOT NULL,
-            finished_at TEXT NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_debate_turns_run_id ON debate_turns(run_id);
-         CREATE TABLE IF NOT EXISTS debate_actions (
-            run_id TEXT NOT NULL,
-            action_id TEXT NOT NULL,
-            action TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            due TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'OPEN',
-            PRIMARY KEY (run_id, action_id)
-         );",
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn get_index_count(central_home: &Path) -> Result<usize, String> {
-    let conn = open_index_connection(central_home)?;
-    ensure_index_schema(&conn)?;
-    conn.query_row("SELECT COUNT(*) FROM records_fts", [], |row| row.get(0))
-        .map_err(|error| error.to_string())
-}
-
-pub(crate) fn upsert_index_record_if_exists(central_home: &Path, record: &Record) -> Result<(), String> {
-    let index_path = index_db_path(central_home);
-    if !index_path.exists() {
-        return Ok(());
-    }
-
-    let conn = open_index_connection(central_home)?;
-    ensure_index_schema(&conn)?;
-
-    if let Some(json_path) = &record.json_path {
-        conn.execute("DELETE FROM records_fts WHERE json_path = ?", params![json_path])
-            .map_err(|error| error.to_string())?;
-    }
-
-    conn.execute(
-        "INSERT INTO records_fts (
-            json_path,
-            md_path,
-            record_type,
-            title,
-            final_body,
-            source_text,
-            tags,
-            created_at,
-            date,
-            notion_sync_status,
-            notion_page_id,
-            notion_url,
-            notion_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            record.json_path.clone().unwrap_or_default(),
-            record.md_path.clone().unwrap_or_default(),
-            record.record_type,
-            record.title,
-            record.final_body,
-            record.source_text,
-            record.tags.join(","),
-            record.created_at,
-            record.date.clone().unwrap_or_default(),
-            record.notion_sync_status,
-            record.notion_page_id.clone().unwrap_or_default(),
-            record.notion_url.clone().unwrap_or_default(),
-            record.notion_error.clone().unwrap_or_default(),
-        ],
-    )
-    .map_err(|error| error.to_string())?;
-
-    Ok(())
-}
-
-pub(crate) fn delete_index_record_if_exists(central_home: &Path, json_path: &str) -> Result<(), String> {
-    let index_path = index_db_path(central_home);
-    if !index_path.exists() {
-        return Ok(());
-    }
-
-    let conn = open_index_connection(central_home)?;
-    ensure_index_schema(&conn)?;
-
-    conn.execute("DELETE FROM records_fts WHERE json_path = ?", params![json_path])
-        .map_err(|error| error.to_string())?;
-
-    Ok(())
-}
-
-fn index_db_path(central_home: &Path) -> PathBuf {
-    central_home.join(".agentic").join(SEARCH_DB_FILE)
-}
-
-fn ensure_structure(central_home: &Path) -> std::io::Result<()> {
-    let records_root = central_home.join("records");
-    fs::create_dir_all(&records_root)?;
-    for (_, folder) in RECORD_TYPE_DIRS {
-        fs::create_dir_all(records_root.join(folder))?;
-    }
-    fs::create_dir_all(records_root.join("debates"))?;
-    fs::create_dir_all(central_home.join(".agentic").join("logs"))?;
-    Ok(())
-}
-
-fn detect_central_home_path(candidate: &Path) -> PathBuf {
-    let mut path = candidate.to_path_buf();
-
-    if path.is_file() {
-        if let Some(parent) = path.parent() {
-            path = parent.to_path_buf();
-        }
-    }
-
-    let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-    let parent_name = path
-        .parent()
-        .and_then(|value| value.file_name())
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-
-    let record_folders: HashSet<&str> = RECORD_TYPE_DIRS.iter().map(|(_, folder)| *folder).collect();
-
-    if record_folders.contains(name) && parent_name == "records" {
-        if let Some(home) = path.parent().and_then(Path::parent) {
-            return home.to_path_buf();
-        }
-    }
-
-    if name == "records" {
-        if let Some(home) = path.parent() {
-            return home.to_path_buf();
-        }
-    }
-
-    if name == "logs" && parent_name == ".agentic" {
-        if let Some(home) = path.parent().and_then(Path::parent) {
-            return home.to_path_buf();
-        }
-    }
-
-    if name == ".agentic" {
-        if let Some(home) = path.parent() {
-            return home.to_path_buf();
-        }
-    }
-
-    if is_central_home(&path) {
-        return path;
-    }
-
-    for ancestor in path.ancestors() {
-        if is_central_home(ancestor) {
-            return ancestor.to_path_buf();
-        }
-    }
-
-    path
-}
-
-fn is_central_home(path: &Path) -> bool {
-    path.join(".agentic").join("CENTRAL_LOG_MARKER").exists()
-        || path.join("records").exists()
-        || path.join(".agentic").join("logs").exists()
-}
-
-pub(crate) fn record_from_value(
-    value: &Value,
-    json_path: Option<PathBuf>,
-    md_path: Option<PathBuf>,
-    fallback_type: Option<String>,
-) -> Record {
-    let record_type = value_string(value, "type")
-        .or(fallback_type)
-        .map(|item| normalize_record_type(&item))
-        .unwrap_or_else(|| "note".to_string());
-
-    let created_at = value_string(value, "created_at").unwrap_or_else(|| {
-        json_path
-            .as_ref()
-            .map(|path| file_mtime_iso(path))
-            .unwrap_or_default()
-    });
-
-    Record {
-        record_type,
-        title: value_string(value, "title").unwrap_or_else(|| "Untitled".to_string()),
-        created_at,
-        source_text: value_string(value, "source_text").unwrap_or_default(),
-        final_body: value_string(value, "final_body").unwrap_or_default(),
-        tags: value_string_array(value, "tags"),
-        date: value_string(value, "date"),
-        notion_page_id: value_string(value, "notion_page_id"),
-        notion_url: value_string(value, "notion_url"),
-        notion_sync_status: value_string(value, "notion_sync_status")
-            .unwrap_or_else(|| "SUCCESS".to_string()),
-        notion_error: value_string(value, "notion_error"),
-        notion_last_synced_at: value_string(value, "notion_last_synced_at"),
-        notion_last_edited_time: value_string(value, "notion_last_edited_time"),
-        notion_last_synced_hash: value_string(value, "notion_last_synced_hash"),
-        json_path: json_path.map(|path| path.to_string_lossy().to_string()),
-        md_path: md_path.map(|path| path.to_string_lossy().to_string()),
-    }
-}
-
-pub(crate) fn render_markdown(record: &Record) -> String {
-    let emoji = match record.record_type.as_str() {
-        "decision" => "⚖️",
-        "worklog" => "📝",
-        "idea" => "💡",
-        "backlog" => "📋",
-        _ => "📄",
-    };
-
-    let mut lines = vec![
-        format!("# {} {}", emoji, record.title),
-        String::new(),
-        format!("**Type:** {}", record.record_type.to_uppercase()),
-        format!("**Created:** {}", record.created_at),
-    ];
-
-    if let Some(date) = &record.date {
-        lines.push(format!("**Date:** {}", date));
-    }
-
-    if !record.tags.is_empty() {
-        lines.push(format!("**Tags:** {}", record.tags.join(", ")));
-    }
-
-    if let Some(url) = &record.notion_url {
-        lines.push(format!("**Notion:** {}", url));
-    }
-
-    lines.extend(vec![
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        record.final_body.clone(),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        "## Original Input".to_string(),
-        String::new(),
-        format!("> {}", record.source_text),
-    ]);
-
-    lines.join("\n")
-}
-
-pub(crate) fn app_settings_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE_NAME)
-}
-
-pub(crate) fn load_settings() -> AppSettings {
-    let path = app_settings_path();
-    if !path.exists() {
-        return AppSettings::default();
-    }
-
-    match fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
-            Ok(settings) => normalize_settings(settings),
-            Err(_) => AppSettings::default(),
-        },
-        Err(_) => AppSettings::default(),
-    }
-}
-
-pub(crate) fn save_settings(settings: &AppSettings) -> Result<(), String> {
-    let path = app_settings_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
-    write_atomic(&path, &bytes).map_err(|error| error.to_string())
-}
-
 fn normalize_provider_type(value: &str) -> String {
     if value.trim().eq_ignore_ascii_case("web") {
         "web".to_string()
@@ -4256,7 +3628,7 @@ fn normalize_provider_registry_settings(
     ProviderRegistrySettings { providers }
 }
 
-fn normalize_settings(mut settings: AppSettings) -> AppSettings {
+pub(crate) fn normalize_settings(mut settings: AppSettings) -> AppSettings {
     if settings.poll_interval_sec == 0 {
         settings.poll_interval_sec = default_poll_interval();
     }
@@ -4451,30 +3823,6 @@ fn infer_record_type_from_path(central_home: &Path, path: &Path) -> Option<Strin
         }
     }
     None
-}
-
-pub(crate) fn persist_record_to_files(record: &Record, json_path: &Path, md_path: &Path) -> Result<(), String> {
-    let persisted = json!({
-        "type": record.record_type,
-        "title": record.title,
-        "created_at": record.created_at,
-        "notion_page_id": record.notion_page_id,
-        "notion_url": record.notion_url,
-        "source_text": record.source_text,
-        "final_body": record.final_body,
-        "tags": record.tags,
-        "date": record.date,
-        "notion_sync_status": record.notion_sync_status,
-        "notion_error": record.notion_error,
-        "notion_last_synced_at": record.notion_last_synced_at,
-        "notion_last_edited_time": record.notion_last_edited_time,
-        "notion_last_synced_hash": record.notion_last_synced_hash,
-    });
-    let json_bytes = serde_json::to_vec_pretty(&persisted).map_err(|error| error.to_string())?;
-    write_atomic(json_path, &json_bytes).map_err(|error| error.to_string())?;
-    let markdown = render_markdown(record);
-    write_atomic(md_path, markdown.as_bytes()).map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn normalize_conflict_strategy(value: Option<String>) -> String {
