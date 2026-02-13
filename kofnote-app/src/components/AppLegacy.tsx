@@ -2930,6 +2930,8 @@ function App() {
                 <select value={aiProvider} onChange={(event) => setAiProvider(event.target.value as AiProvider)}>
                   <option value="local">local</option>
                   <option value="openai">openai</option>
+                  <option value="gemini">gemini</option>
+                  <option value="claude">claude</option>
                 </select>
               </label>
 

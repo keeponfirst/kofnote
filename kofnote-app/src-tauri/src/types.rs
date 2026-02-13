@@ -1038,6 +1038,8 @@ pub(crate) fn run_ai_analysis(
 
     let content = match provider.as_str() {
         "openai" => run_openai_analysis(&model, &prompt, api_key, &records, &logs, include_logs, max_records)?,
+        "gemini" => run_gemini_analysis(&model, &prompt, &records, &logs, include_logs, max_records)?,
+        "claude" => run_claude_analysis(&model, &prompt, &records, &logs, include_logs, max_records)?,
         "local" => run_local_analysis(&prompt, &records, &logs),
         _ => return Err(format!("Unsupported provider: {provider}")),
     };
@@ -1872,6 +1874,54 @@ fn run_openai_analysis(
     }
 
     Ok(output)
+}
+
+fn run_gemini_analysis(
+    model: &str,
+    prompt: &str,
+    records: &[Record],
+    logs: &[LogEntry],
+    include_logs: bool,
+    max_records: usize,
+) -> Result<String, String> {
+    let context = build_context_digest(records, logs, include_logs, max_records);
+    let user_prompt = if prompt.trim().is_empty() {
+        "Summarize patterns, risks, and a practical 7-day plan.".to_string()
+    } else {
+        prompt.trim().to_string()
+    };
+    let merged = format!(
+        "You are analyzing a local-first productivity brain system.\nReturn concise markdown sections: Summary, Patterns, Risks, Action Plan (7 days).\n\nUser request:\n{}\n\nContext:\n{}",
+        user_prompt, context
+    );
+    let model = if model.trim().is_empty() { "gemini-2.0-flash" } else { model.trim() };
+    crate::providers::gemini::run_gemini_text_completion(model, &merged, 60, 4096)
+}
+
+fn run_claude_analysis(
+    model: &str,
+    prompt: &str,
+    records: &[Record],
+    logs: &[LogEntry],
+    include_logs: bool,
+    max_records: usize,
+) -> Result<String, String> {
+    let context = build_context_digest(records, logs, include_logs, max_records);
+    let user_prompt = if prompt.trim().is_empty() {
+        "Summarize patterns, risks, and a practical 7-day plan.".to_string()
+    } else {
+        prompt.trim().to_string()
+    };
+    let merged = format!(
+        "You are analyzing a local-first productivity brain system.\nReturn concise markdown sections: Summary, Patterns, Risks, Action Plan (7 days).\n\nUser request:\n{}\n\nContext:\n{}",
+        user_prompt, context
+    );
+    let model = if model.trim().is_empty() {
+        "claude-3-5-sonnet-latest"
+    } else {
+        model.trim()
+    };
+    crate::providers::claude::run_claude_text_completion(model, &merged, 60, 4096)
 }
 
 fn run_debate_mode_internal(central_home: &Path, request: DebateModeRequest) -> Result<DebateModeResponse, String> {
