@@ -473,6 +473,8 @@ function App() {
   const [recordDateTo, setRecordDateTo] = useState('')
   const [visibleCount, setVisibleCount] = useState(200)
   const [searchMeta, setSearchMeta] = useState<SearchMeta | null>(null)
+  const [selectedRecordPaths, setSelectedRecordPaths] = useState<Set<string>>(new Set())
+  const [batchMode, setBatchMode] = useState(false)
 
   const [aiProvider, setAiProvider] = useState<AiProvider>('local')
   const [aiModel, setAiModel] = useState(DEFAULT_MODEL)
@@ -1228,6 +1230,115 @@ function App() {
       pushNotice('success', t('Record deleted.', '紀錄已刪除。'))
     })
   }, [centralHome, pushNotice, refreshCore, selectedRecordPath, t, withBusy])
+
+  const handleBatchDelete = useCallback(async () => {
+    if (!centralHome) {
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
+      return
+    }
+    const targets = [...selectedRecordPaths].filter(Boolean)
+    if (targets.length === 0) {
+      pushNotice('error', t('No records selected.', '尚未選擇任何紀錄。'))
+      return
+    }
+    if (!window.confirm(t(`Delete ${targets.length} selected record(s)?`, `要刪除 ${targets.length} 筆已選紀錄嗎？`))) {
+      return
+    }
+
+    await withBusy(async () => {
+      for (const jsonPath of targets) {
+        await deleteRecord(centralHome, jsonPath)
+      }
+      const data = await refreshCore(centralHome)
+      setDisplayedRecords(data.records)
+      setSearchMeta(null)
+      setSelectedRecordPaths(new Set())
+      pushNotice('success', t(`Deleted ${targets.length} record(s).`, `已刪除 ${targets.length} 筆紀錄。`))
+    })
+  }, [centralHome, pushNotice, refreshCore, selectedRecordPaths, t, withBusy])
+
+  const handleBatchSyncNotion = useCallback(async () => {
+    if (!centralHome) {
+      pushNotice('error', t('Load Central Home first.', '請先載入中央路徑。'))
+      return
+    }
+    const targets = [...selectedRecordPaths].filter(Boolean)
+    if (targets.length === 0) {
+      pushNotice('error', t('No records selected.', '尚未選擇任何紀錄。'))
+      return
+    }
+
+    await withBusy(async () => {
+      const result = await syncRecordsBidirectional({
+        centralHome,
+        jsonPaths: targets,
+        databaseId: appSettings.integrations.notion.databaseId || undefined,
+        conflictStrategy: notionConflictStrategy,
+      })
+      const data = await refreshCore(centralHome)
+      setDisplayedRecords(data.records)
+      setSearchMeta(null)
+      setNotionSyncReport(JSON.stringify(result, null, 2))
+      pushNotice(
+        'success',
+        t(
+          `Batch sync done. success=${result.success}, failed=${result.failed}, conflicts=${result.conflicts}.`,
+          `批次同步完成。成功=${result.success}，失敗=${result.failed}，衝突=${result.conflicts}。`,
+        ),
+      )
+    })
+  }, [
+    appSettings.integrations.notion.databaseId,
+    centralHome,
+    notionConflictStrategy,
+    pushNotice,
+    refreshCore,
+    selectedRecordPaths,
+    t,
+    withBusy,
+  ])
+
+  const handleBatchExport = useCallback(() => {
+    const selected = allRecords.filter((item) => item.jsonPath && selectedRecordPaths.has(item.jsonPath))
+    if (selected.length === 0) {
+      pushNotice('error', t('No records selected.', '尚未選擇任何紀錄。'))
+      return
+    }
+
+    const lines = [
+      `# Batch Export (${selected.length} records)`,
+      '',
+      `Generated: ${new Date().toISOString()}`,
+      '',
+    ]
+    for (const item of selected) {
+      lines.push(`## [${item.recordType}] ${item.title}`)
+      lines.push(`- Created: ${item.createdAt}`)
+      if (item.date) {
+        lines.push(`- Date: ${item.date}`)
+      }
+      if (item.tags.length > 0) {
+        lines.push(`- Tags: ${item.tags.join(', ')}`)
+      }
+      lines.push('')
+      lines.push(item.finalBody || '')
+      lines.push('')
+      lines.push('---')
+      lines.push('')
+    }
+
+    const markdown = lines.join('\n')
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `kof-records-batch-${Date.now()}.md`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    pushNotice('success', t('Batch markdown exported.', '批次 Markdown 已匯出。'))
+  }, [allRecords, pushNotice, selectedRecordPaths, t])
 
   const handleRunAi = useCallback(async () => {
     if (!centralHome) {
@@ -2440,7 +2551,60 @@ function App() {
               <button type="button" onClick={() => void handleDeleteRecord()} disabled={busy || !selectedRecordPath}>
                 {t('common.delete')}
               </button>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setBatchMode((prev) => {
+                    const next = !prev
+                    if (!next) {
+                      setSelectedRecordPaths(new Set())
+                    }
+                    return next
+                  })
+                }}
+              >
+                {batchMode ? t('Exit Batch Mode', '離開批次模式') : t('Batch Mode', '批次模式')}
+              </button>
             </div>
+
+            {batchMode ? (
+              <div className="toolbar-row">
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => {
+                    const next = new Set(
+                      displayedRecords.map((item) => item.jsonPath).filter((item): item is string => Boolean(item)),
+                    )
+                    setSelectedRecordPaths(next)
+                  }}
+                >
+                  {t('Select All', '全選')}
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setSelectedRecordPaths(new Set())}>
+                  {t('Deselect All', '取消全選')}
+                </button>
+              </div>
+            ) : null}
+
+            {batchMode && selectedRecordPaths.size > 0 ? (
+              <div className="toolbar-row">
+                <span className="muted">{t(`${selectedRecordPaths.size} selected`, `${selectedRecordPaths.size} 筆已選`)}</span>
+                <button type="button" onClick={() => void handleBatchDelete()} disabled={busy}>
+                  {t('Delete Selected', '刪除已選')}
+                </button>
+                <button type="button" onClick={() => void handleBatchSyncNotion()} disabled={busy}>
+                  {t('Sync to Notion', '同步到 Notion')}
+                </button>
+                <button type="button" onClick={() => void handleBatchExport()} disabled={busy}>
+                  {t('Export Markdown', '匯出 Markdown')}
+                </button>
+                <button type="button" className="ghost-btn" onClick={() => setSelectedRecordPaths(new Set())}>
+                  {t('Deselect All', '取消全選')}
+                </button>
+              </div>
+            ) : null}
 
             <div className="records-filter-grid">
               <select
@@ -2480,24 +2644,51 @@ function App() {
               {visibleRecords.map((item) => {
                 const selected = item.jsonPath === selectedRecordPath
                 const snippet = item.jsonPath ? searchMeta?.snippets[item.jsonPath] : undefined
+                const checked = item.jsonPath ? selectedRecordPaths.has(item.jsonPath) : false
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={item.jsonPath ?? `${item.createdAt}-${item.title}`}
-                    className={selected ? 'record-item selected' : 'record-item'}
-                    onClick={() => {
-                      setSelectedRecordPath(item.jsonPath ?? null)
-                      setRecordForm(formFromRecord(item))
-                    }}
+                    style={{ display: 'grid', gridTemplateColumns: batchMode ? '20px minmax(0, 1fr)' : '1fr', gap: 8 }}
                   >
-                    <p>{item.createdAt.slice(0, 19)}</p>
-                    <p>
-                      <strong>{item.recordType}</strong> | {item.title}
-                    </p>
-                    {snippet ? (
-                      <p className="search-snippet" dangerouslySetInnerHTML={{ __html: snippet }} />
+                    {batchMode ? (
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          const key = item.jsonPath ?? ''
+                          if (!key) {
+                            return
+                          }
+                          setSelectedRecordPaths((prev) => {
+                            const next = new Set(prev)
+                            if (event.target.checked) {
+                              next.add(key)
+                            } else {
+                              next.delete(key)
+                            }
+                            return next
+                          })
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                      />
                     ) : null}
-                  </button>
+                    <button
+                      type="button"
+                      className={selected ? 'record-item selected' : 'record-item'}
+                      onClick={() => {
+                        setSelectedRecordPath(item.jsonPath ?? null)
+                        setRecordForm(formFromRecord(item))
+                      }}
+                    >
+                      <p>{item.createdAt.slice(0, 19)}</p>
+                      <p>
+                        <strong>{item.recordType}</strong> | {item.title}
+                      </p>
+                      {snippet ? (
+                        <p className="search-snippet" dangerouslySetInnerHTML={{ __html: snippet }} />
+                      ) : null}
+                    </button>
+                  </div>
                 )
               })}
               {displayedRecords.length === 0 && <p className="muted">{t('common.noRecords')}</p>}
