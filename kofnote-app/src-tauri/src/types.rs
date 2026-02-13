@@ -1538,27 +1538,37 @@ pub(crate) async fn run_debate_mode(
     central_home: String,
     request: DebateModeRequest,
 ) -> Result<DebateModeResponse, String> {
+    // Check lock
     {
-        let mut guard = lock
+        let guard = lock
             .0
             .lock()
             .map_err(|error| format!("Lock poisoned: {error}"))?;
         if let Some(run_id) = guard.as_ref() {
             return Err(format!("Another debate is already running: {run_id}"));
         }
+    }
+    // Set lock
+    {
+        let mut guard = lock
+            .0
+            .lock()
+            .map_err(|error| format!("Lock poisoned: {error}"))?;
         *guard = Some(generate_debate_run_id());
     }
 
     let home = normalized_home(&central_home)?;
     let result = tauri::async_runtime::spawn_blocking(move || run_debate_mode_internal(&home, request))
         .await
-        .map_err(|error| format!("Debate worker join error: {error}"))?;
+        .map_err(|error| format!("Debate worker join error: {error}"));
 
+    // ALWAYS clear lock, even on error.
     if let Ok(mut guard) = lock.0.lock() {
         *guard = None;
     }
 
-    result
+    // Flatten: Result<Result<T, E>, E> -> Result<T, E>
+    result?
 }
 
 pub(crate) async fn replay_debate_mode(
