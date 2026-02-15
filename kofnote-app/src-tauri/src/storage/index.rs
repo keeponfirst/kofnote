@@ -203,7 +203,7 @@ pub(crate) fn search_records_in_index(
             notion_page_id,
             notion_url,
             notion_error,
-            snippet(records_fts, 2, '<mark>', '</mark>', '...', 32) AS snippet
+            snippet(records_fts, -1, '<mark>', '</mark>', '...', 32) AS snippet
         FROM records_fts
         {where_sql}
         ORDER BY bm25(records_fts), created_at DESC
