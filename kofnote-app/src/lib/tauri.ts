@@ -18,6 +18,10 @@ import type {
   NotionConflictStrategy,
   NotionBatchSyncResult,
   NotionSyncResult,
+  PromptProfile,
+  PromptRunRequest,
+  PromptRunResponse,
+  PromptTemplate,
   RebuildIndexResult,
   RecordItem,
   RecordPayload,
@@ -41,6 +45,8 @@ type MockState = {
   hasNotionKey: boolean
   notebooks: NotebookSummary[]
   debateRuns: Record<string, DebateModeResponse>
+  promptProfiles: PromptProfile[]
+  promptTemplates: PromptTemplate[]
 }
 
 function nowMinus(hours: number): string {
@@ -180,6 +186,31 @@ function createMockState(): MockState {
       },
     ],
     debateRuns: {},
+    promptProfiles: [
+      {
+        id: 'pp-work',
+        name: '工作用',
+        displayName: 'Henry Chen',
+        role: 'Software Engineer',
+        company: 'ACME Corp',
+        department: 'Platform Team',
+        bio: '負責後端 API 平台開發，熟悉 Rust、TypeScript。',
+        createdAt: nowMinus(10),
+        updatedAt: nowMinus(10),
+      },
+    ],
+    promptTemplates: [
+      {
+        id: 'pt-daily',
+        name: '每日工作日報',
+        description: '撰寫今日工作重點與進度的日報',
+        content:
+          '我是 {{display_name}}，{{role}} at {{company}}（{{department}}）。\n{{bio}}\n\n今日工作重點：\n{{focus}}\n\n請幫我撰寫一份簡潔清晰的工作日報。',
+        variables: [{ key: 'focus', label: '今日重點', placeholder: '請描述今日主要工作' }],
+        createdAt: nowMinus(10),
+        updatedAt: nowMinus(10),
+      },
+    ],
     settings: {
       profiles: [
         {
@@ -761,6 +792,72 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
       }
       return result as T
     }
+    case 'list_prompt_profiles': {
+      return clone(mockState.promptProfiles) as T
+    }
+    case 'upsert_prompt_profile': {
+      const profile = args.profile as PromptProfile
+      const now = new Date().toISOString()
+      const id = profile.id?.trim() || `pp-${Date.now()}`
+      const saved: PromptProfile = { ...profile, id, updatedAt: now, createdAt: profile.createdAt || now }
+      const idx = mockState.promptProfiles.findIndex((p) => p.id === id)
+      if (idx >= 0) {
+        mockState.promptProfiles[idx] = saved
+      } else {
+        mockState.promptProfiles.push(saved)
+      }
+      return clone(saved) as T
+    }
+    case 'delete_prompt_profile': {
+      const id = String(args.id ?? '')
+      mockState.promptProfiles = mockState.promptProfiles.filter((p) => p.id !== id)
+      return undefined as T
+    }
+    case 'list_prompt_templates': {
+      return clone(mockState.promptTemplates) as T
+    }
+    case 'upsert_prompt_template': {
+      const template = args.template as PromptTemplate
+      const now = new Date().toISOString()
+      const id = template.id?.trim() || `pt-${Date.now()}`
+      const saved: PromptTemplate = { ...template, id, updatedAt: now, createdAt: template.createdAt || now }
+      const idx = mockState.promptTemplates.findIndex((t) => t.id === id)
+      if (idx >= 0) {
+        mockState.promptTemplates[idx] = saved
+      } else {
+        mockState.promptTemplates.push(saved)
+      }
+      return clone(saved) as T
+    }
+    case 'delete_prompt_template': {
+      const id = String(args.id ?? '')
+      mockState.promptTemplates = mockState.promptTemplates.filter((t) => t.id !== id)
+      return undefined as T
+    }
+    case 'run_prompt_service': {
+      const request = args.request as PromptRunRequest
+      const profile = mockState.promptProfiles.find((p) => p.id === request.profileId)
+      const template = mockState.promptTemplates.find((t) => t.id === request.templateId)
+      let resolved = template?.content ?? ''
+      if (profile) {
+        resolved = resolved
+          .replace(/\{\{display_name\}\}/g, profile.displayName)
+          .replace(/\{\{role\}\}/g, profile.role)
+          .replace(/\{\{company\}\}/g, profile.company)
+          .replace(/\{\{department\}\}/g, profile.department)
+          .replace(/\{\{bio\}\}/g, profile.bio)
+      }
+      for (const [key, value] of Object.entries(request.variableValues ?? {})) {
+        resolved = resolved.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value)
+      }
+      const provider = request.provider ?? 'local'
+      const result: PromptRunResponse = {
+        result: `[Mock AI 回覆 · ${provider}]\n\n${resolved}`,
+        resolvedPrompt: resolved,
+        provider,
+      }
+      return result as T
+    }
     default:
       throw new Error(`Mock runtime: unsupported command ${command}`)
   }
@@ -1003,6 +1100,34 @@ export async function replayDebateMode(args: {
 
 export async function listDebateRuns(args: { centralHome: string }): Promise<DebateRunSummary[]> {
   return invokeCommand<DebateRunSummary[]>('list_debate_runs', args)
+}
+
+export async function listPromptProfiles(centralHome: string): Promise<PromptProfile[]> {
+  return invokeCommand<PromptProfile[]>('list_prompt_profiles', { centralHome })
+}
+
+export async function upsertPromptProfile(centralHome: string, profile: PromptProfile): Promise<PromptProfile> {
+  return invokeCommand<PromptProfile>('upsert_prompt_profile', { centralHome, profile })
+}
+
+export async function deletePromptProfile(centralHome: string, id: string): Promise<void> {
+  return invokeCommand<void>('delete_prompt_profile', { centralHome, id })
+}
+
+export async function listPromptTemplates(centralHome: string): Promise<PromptTemplate[]> {
+  return invokeCommand<PromptTemplate[]>('list_prompt_templates', { centralHome })
+}
+
+export async function upsertPromptTemplate(centralHome: string, template: PromptTemplate): Promise<PromptTemplate> {
+  return invokeCommand<PromptTemplate>('upsert_prompt_template', { centralHome, template })
+}
+
+export async function deletePromptTemplate(centralHome: string, id: string): Promise<void> {
+  return invokeCommand<void>('delete_prompt_template', { centralHome, id })
+}
+
+export async function runPromptService(centralHome: string, request: PromptRunRequest): Promise<PromptRunResponse> {
+  return invokeCommand<PromptRunResponse>('run_prompt_service', { centralHome, request })
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {

@@ -317,5 +317,7 @@ pub(crate) fn ensure_structure(central_home: &Path) -> std::io::Result<()> {
     }
     fs::create_dir_all(records_root.join("debates"))?;
     fs::create_dir_all(central_home.join(".agentic").join("logs"))?;
+    fs::create_dir_all(central_home.join("prompts").join("profiles"))?;
+    fs::create_dir_all(central_home.join("prompts").join("templates"))?;
     Ok(())
 }

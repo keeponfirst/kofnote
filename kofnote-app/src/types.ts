@@ -363,3 +363,45 @@ export type DebateProgress = {
   totalTurns: number
   status: 'started' | 'completed' | 'failed' | string
 }
+
+export type PromptProfile = {
+  id: string
+  name: string
+  displayName: string
+  role: string
+  company: string
+  department: string
+  bio: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type TemplateVariable = {
+  key: string
+  label: string
+  placeholder: string
+}
+
+export type PromptTemplate = {
+  id: string
+  name: string
+  description: string
+  content: string
+  variables: TemplateVariable[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type PromptRunRequest = {
+  profileId: string
+  templateId: string
+  variableValues: Record<string, string>
+  provider?: string
+  model?: string
+}
+
+export type PromptRunResponse = {
+  result: string
+  resolvedPrompt: string
+  provider: string
+}

@@ -39,6 +39,7 @@ import {
   resolveCentralHome,
   runAiAnalysis,
   runDebateMode,
+  runPromptService,
   saveAppSettings,
   setClaudeApiKey,
   setGeminiApiKey,
@@ -48,6 +49,12 @@ import {
   syncRecordsBidirectional,
   setOpenaiApiKey,
   upsertRecord,
+  listPromptProfiles,
+  upsertPromptProfile,
+  deletePromptProfile,
+  listPromptTemplates,
+  upsertPromptTemplate,
+  deletePromptTemplate,
 } from '../lib/tauri'
 import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from '../i18n'
 import { buildProviderRegistrySettings, ProviderRegistry } from '../lib/providerRegistry'
@@ -78,6 +85,10 @@ import type {
   LogEntry,
   NotionConflictStrategy,
   NotebookSummary,
+  PromptProfile,
+  PromptRunResponse,
+  PromptTemplate,
+  TemplateVariable,
   RecordItem,
   RecordPayload,
   RecordType,
@@ -85,7 +96,7 @@ import type {
   WorkspaceProfile,
 } from '../types'
 
-type TabKey = 'dashboard' | 'records' | 'logs' | 'ai' | 'integrations' | 'settings' | 'health'
+type TabKey = 'dashboard' | 'records' | 'logs' | 'ai' | 'integrations' | 'settings' | 'health' | 'prompt'
 
 type SearchMeta = {
   indexed: boolean
@@ -108,7 +119,7 @@ type RecordFormState = {
   sourceText: string
 }
 
-const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'logs', 'ai', 'integrations', 'settings', 'health']
+const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'logs', 'ai', 'prompt', 'integrations', 'settings', 'health']
 
 type TemplateValues = Record<string, string | number>
 
@@ -510,6 +521,22 @@ function App() {
     totalTurns: number
   } | null>(null)
 
+  // Prompt Service state
+  const [promptProfiles, setPromptProfiles] = useState<PromptProfile[]>([])
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([])
+  const [activePromptProfileId, setActivePromptProfileId] = useState<string>('')
+  const [activePromptTemplateId, setActivePromptTemplateId] = useState<string>('')
+  const [promptProfileDraft, setPromptProfileDraft] = useState<PromptProfile>({
+    id: '', name: '', displayName: '', role: '', company: '', department: '', bio: '', createdAt: '', updatedAt: '',
+  })
+  const [promptTemplateDraft, setPromptTemplateDraft] = useState<PromptTemplate>({
+    id: '', name: '', description: '', content: '', variables: [], createdAt: '', updatedAt: '',
+  })
+  const [promptVariableValues, setPromptVariableValues] = useState<Record<string, string>>({})
+  const [promptProvider, setPromptProvider] = useState<string>('local')
+  const [promptRunResult, setPromptRunResult] = useState<PromptRunResponse | null>(null)
+  const [promptBusy, setPromptBusy] = useState(false)
+
   const [appSettings, setAppSettings] = useState<AppSettings>({
     profiles: [],
     activeProfileId: null,
@@ -596,6 +623,8 @@ function App() {
           return t('tab.settings')
         case 'health':
           return t('tab.health')
+        case 'prompt':
+          return t('tab.prompt')
         default:
           return key
       }
@@ -963,6 +992,16 @@ function App() {
     [],
   )
 
+  const refreshPromptData = useCallback(async (home: string) => {
+    if (!home.trim()) return
+    const [profiles, templates] = await Promise.all([
+      listPromptProfiles(home),
+      listPromptTemplates(home),
+    ])
+    setPromptProfiles(profiles)
+    setPromptTemplates(templates)
+  }, [])
+
   const applySearch = useCallback(async () => {
     if (!centralHome) {
       return
@@ -1006,7 +1045,7 @@ function App() {
         setCentralHomeInput(resolved.centralHome)
         localStorage.setItem(LOCAL_STORAGE_KEY, resolved.centralHome)
 
-        const [data] = await Promise.all([refreshCore(resolved.centralHome), refreshDebateRuns(resolved.centralHome)])
+        const [data] = await Promise.all([refreshCore(resolved.centralHome), refreshDebateRuns(resolved.centralHome), refreshPromptData(resolved.centralHome)])
         setDisplayedRecords(data.records)
         setSearchMeta(null)
 
@@ -1028,7 +1067,7 @@ function App() {
         )
       })
     },
-    [centralHomeInput, pushNotice, refreshCore, refreshDebateRuns, t, withBusy],
+    [centralHomeInput, pushNotice, refreshCore, refreshDebateRuns, refreshPromptData, t, withBusy],
   )
 
   const handlePickCentralHome = useCallback(async () => {
@@ -4006,6 +4045,357 @@ function App() {
     )
   }
 
+  function renderPromptService() {
+    const activeProfile = promptProfiles.find((p) => p.id === activePromptProfileId) ?? null
+    const activeTemplate = promptTemplates.find((t) => t.id === activePromptTemplateId) ?? null
+
+    function resolvePreview(): string {
+      if (!activeProfile || !activeTemplate) return ''
+      let resolved = activeTemplate.content
+        .replace(/\{\{display_name\}\}/g, activeProfile.displayName)
+        .replace(/\{\{role\}\}/g, activeProfile.role)
+        .replace(/\{\{company\}\}/g, activeProfile.company)
+        .replace(/\{\{department\}\}/g, activeProfile.department)
+        .replace(/\{\{bio\}\}/g, activeProfile.bio)
+      for (const [key, value] of Object.entries(promptVariableValues)) {
+        resolved = resolved.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value)
+      }
+      return resolved
+    }
+
+    async function handleSaveProfile() {
+      if (!centralHome) return
+      setPromptBusy(true)
+      try {
+        const saved = await upsertPromptProfile(centralHome, promptProfileDraft)
+        await refreshPromptData(centralHome)
+        setActivePromptProfileId(saved.id)
+        setPromptProfileDraft(saved)
+        pushNotice('success', t('Profile saved.', 'Profile 已儲存。'))
+      } catch (e) {
+        pushNotice('error', String(e))
+      } finally {
+        setPromptBusy(false)
+      }
+    }
+
+    async function handleDeleteProfile() {
+      if (!centralHome || !activePromptProfileId) return
+      setPromptBusy(true)
+      try {
+        await deletePromptProfile(centralHome, activePromptProfileId)
+        await refreshPromptData(centralHome)
+        setActivePromptProfileId('')
+        setPromptProfileDraft({ id: '', name: '', displayName: '', role: '', company: '', department: '', bio: '', createdAt: '', updatedAt: '' })
+        pushNotice('success', t('Profile deleted.', 'Profile 已刪除。'))
+      } catch (e) {
+        pushNotice('error', String(e))
+      } finally {
+        setPromptBusy(false)
+      }
+    }
+
+    async function handleSaveTemplate() {
+      if (!centralHome) return
+      setPromptBusy(true)
+      try {
+        const saved = await upsertPromptTemplate(centralHome, promptTemplateDraft)
+        await refreshPromptData(centralHome)
+        setActivePromptTemplateId(saved.id)
+        setPromptTemplateDraft(saved)
+        pushNotice('success', t('Template saved.', '模板已儲存。'))
+      } catch (e) {
+        pushNotice('error', String(e))
+      } finally {
+        setPromptBusy(false)
+      }
+    }
+
+    async function handleDeleteTemplate() {
+      if (!centralHome || !activePromptTemplateId) return
+      setPromptBusy(true)
+      try {
+        await deletePromptTemplate(centralHome, activePromptTemplateId)
+        await refreshPromptData(centralHome)
+        setActivePromptTemplateId('')
+        setPromptTemplateDraft({ id: '', name: '', description: '', content: '', variables: [], createdAt: '', updatedAt: '' })
+        pushNotice('success', t('Template deleted.', '模板已刪除。'))
+      } catch (e) {
+        pushNotice('error', String(e))
+      } finally {
+        setPromptBusy(false)
+      }
+    }
+
+    async function handleRunPrompt() {
+      if (!centralHome) return
+      if (!activePromptProfileId) { pushNotice('error', t('prompt.run.noProfile')); return }
+      if (!activePromptTemplateId) { pushNotice('error', t('prompt.run.noTemplate')); return }
+      setPromptBusy(true)
+      setPromptRunResult(null)
+      try {
+        const result = await runPromptService(centralHome, {
+          profileId: activePromptProfileId,
+          templateId: activePromptTemplateId,
+          variableValues: promptVariableValues,
+          provider: promptProvider,
+        })
+        setPromptRunResult(result)
+      } catch (e) {
+        pushNotice('error', String(e))
+      } finally {
+        setPromptBusy(false)
+      }
+    }
+
+    function addTemplateVariable() {
+      setPromptTemplateDraft((prev) => ({
+        ...prev,
+        variables: [...prev.variables, { key: '', label: '', placeholder: '' }],
+      }))
+    }
+
+    function updateTemplateVariable(index: number, field: keyof TemplateVariable, value: string) {
+      setPromptTemplateDraft((prev) => {
+        const vars = [...prev.variables]
+        vars[index] = { ...vars[index], [field]: value }
+        return { ...prev, variables: vars }
+      })
+    }
+
+    function removeTemplateVariable(index: number) {
+      setPromptTemplateDraft((prev) => ({
+        ...prev,
+        variables: prev.variables.filter((_, i) => i !== index),
+      }))
+    }
+
+    const preview = resolvePreview()
+
+    return (
+      <div className="page-stack">
+        <div className="panel section-hero ai-hero">
+          <div className="section-hero-content">
+            <p className="eyebrow">{t('prompt.hero.eyebrow')}</p>
+            <h3>{t('prompt.hero.title')}</h3>
+            <p className="hero-desc">{t('prompt.hero.desc')}</p>
+          </div>
+          <div className="section-hero-stats">
+            <div className="hero-stat">
+              <span className="stat-num">{promptProfiles.length}</span>
+              <span className="stat-label">{t('prompt.hero.profiles')}</span>
+            </div>
+            <div className="hero-stat">
+              <span className="stat-num">{promptTemplates.length}</span>
+              <span className="stat-label">{t('prompt.hero.templates')}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-layout" style={{ alignItems: 'flex-start' }}>
+          {/* ── 左欄：身份 Profiles ── */}
+          <div className="panel left-panel">
+            <div className="panel-header">
+              <div>
+                <h3>{t('prompt.profile.title')}</h3>
+                <p className="panel-sub">{t('prompt.profile.subtitle')}</p>
+              </div>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setActivePromptProfileId('')
+                  setPromptProfileDraft({ id: '', name: '', displayName: '', role: '', company: '', department: '', bio: '', createdAt: '', updatedAt: '' })
+                }}
+              >
+                {t('prompt.profile.new')}
+              </button>
+            </div>
+
+            {promptProfiles.length === 0 && (
+              <p className="empty-hint">{t('prompt.profile.empty')}</p>
+            )}
+            <ul className="simple-list">
+              {promptProfiles.map((p) => (
+                <li
+                  key={p.id}
+                  className={activePromptProfileId === p.id ? 'selected' : ''}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => {
+                    setActivePromptProfileId(p.id)
+                    setPromptProfileDraft(p)
+                  }}
+                >
+                  <span>{p.name || p.displayName || p.id}</span>
+                  {activePromptProfileId === p.id && <span className="badge-ok">✓</span>}
+                </li>
+              ))}
+            </ul>
+
+            <div className="form-section" style={{ marginTop: '1rem' }}>
+              <label className="field-label">{t('prompt.profile.name')}</label>
+              <input className="text-input" value={promptProfileDraft.name} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder={t('prompt.profile.name')} />
+              <label className="field-label">{t('prompt.profile.displayName')}</label>
+              <input className="text-input" value={promptProfileDraft.displayName} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, displayName: e.target.value }))} placeholder="Henry Chen" />
+              <label className="field-label">{t('prompt.profile.role')}</label>
+              <input className="text-input" value={promptProfileDraft.role} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, role: e.target.value }))} placeholder="Software Engineer" />
+              <label className="field-label">{t('prompt.profile.company')}</label>
+              <input className="text-input" value={promptProfileDraft.company} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, company: e.target.value }))} placeholder="ACME Corp" />
+              <label className="field-label">{t('prompt.profile.department')}</label>
+              <input className="text-input" value={promptProfileDraft.department} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, department: e.target.value }))} placeholder="Platform Team" />
+              <label className="field-label">{t('prompt.profile.bio')}</label>
+              <textarea className="text-input" rows={3} value={promptProfileDraft.bio} onChange={(e) => setPromptProfileDraft((prev) => ({ ...prev, bio: e.target.value }))} placeholder={t('prompt.profile.bio')} />
+              <div className="row-actions" style={{ marginTop: '0.5rem' }}>
+                <button type="button" onClick={() => void handleSaveProfile()} disabled={promptBusy || !centralHome}>{t('prompt.profile.save')}</button>
+                {activePromptProfileId && (
+                  <button type="button" className="danger-btn" onClick={() => void handleDeleteProfile()} disabled={promptBusy}>{t('prompt.profile.delete')}</button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ── 中欄：模板庫 ── */}
+          <div className="panel left-panel">
+            <div className="panel-header">
+              <div>
+                <h3>{t('prompt.template.title')}</h3>
+                <p className="panel-sub">{t('prompt.template.subtitle')}</p>
+              </div>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setActivePromptTemplateId('')
+                  setPromptTemplateDraft({ id: '', name: '', description: '', content: '', variables: [], createdAt: '', updatedAt: '' })
+                }}
+              >
+                {t('prompt.template.new')}
+              </button>
+            </div>
+
+            {promptTemplates.length === 0 && (
+              <p className="empty-hint">{t('prompt.template.empty')}</p>
+            )}
+            <ul className="simple-list">
+              {promptTemplates.map((tmpl) => (
+                <li
+                  key={tmpl.id}
+                  className={activePromptTemplateId === tmpl.id ? 'selected' : ''}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => {
+                    setActivePromptTemplateId(tmpl.id)
+                    setPromptTemplateDraft(tmpl)
+                    setPromptVariableValues({})
+                    setPromptRunResult(null)
+                  }}
+                >
+                  <span>{tmpl.name || tmpl.id}</span>
+                  {activePromptTemplateId === tmpl.id && <span className="badge-ok">✓</span>}
+                </li>
+              ))}
+            </ul>
+
+            <div className="form-section" style={{ marginTop: '1rem' }}>
+              <label className="field-label">{t('prompt.template.name')}</label>
+              <input className="text-input" value={promptTemplateDraft.name} onChange={(e) => setPromptTemplateDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder={t('prompt.template.name')} />
+              <label className="field-label">{t('prompt.template.description')}</label>
+              <input className="text-input" value={promptTemplateDraft.description} onChange={(e) => setPromptTemplateDraft((prev) => ({ ...prev, description: e.target.value }))} placeholder={t('prompt.template.description')} />
+              <label className="field-label">{t('prompt.template.content')}</label>
+              <textarea className="text-input" rows={6} value={promptTemplateDraft.content} onChange={(e) => setPromptTemplateDraft((prev) => ({ ...prev, content: e.target.value }))} placeholder={'{{display_name}}, {{role}} at {{company}}...'} />
+
+              <label className="field-label" style={{ marginTop: '0.75rem' }}>{t('prompt.template.variables')}</label>
+              {promptTemplateDraft.variables.map((v, i) => (
+                <div key={i} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.25rem', alignItems: 'center' }}>
+                  <input className="text-input" style={{ flex: 1 }} value={v.key} onChange={(e) => updateTemplateVariable(i, 'key', e.target.value)} placeholder={t('prompt.template.varKey')} />
+                  <input className="text-input" style={{ flex: 2 }} value={v.label} onChange={(e) => updateTemplateVariable(i, 'label', e.target.value)} placeholder={t('prompt.template.varLabel')} />
+                  <input className="text-input" style={{ flex: 2 }} value={v.placeholder} onChange={(e) => updateTemplateVariable(i, 'placeholder', e.target.value)} placeholder={t('prompt.template.varPlaceholder')} />
+                  <button type="button" className="ghost-btn" onClick={() => removeTemplateVariable(i)}>✕</button>
+                </div>
+              ))}
+              <button type="button" className="ghost-btn" style={{ marginTop: '0.25rem' }} onClick={addTemplateVariable}>{t('prompt.template.addVar')}</button>
+
+              <div className="row-actions" style={{ marginTop: '0.5rem' }}>
+                <button type="button" onClick={() => void handleSaveTemplate()} disabled={promptBusy || !centralHome}>{t('prompt.template.save')}</button>
+                {activePromptTemplateId && (
+                  <button type="button" className="danger-btn" onClick={() => void handleDeleteTemplate()} disabled={promptBusy}>{t('prompt.template.delete')}</button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ── 右欄：組合 & 執行 ── */}
+          <div className="panel" style={{ flex: 1 }}>
+            <h3>{t('prompt.run.title')}</h3>
+            <p className="panel-sub">{t('prompt.run.subtitle')}</p>
+
+            <div className="form-section">
+              <label className="field-label">{t('prompt.run.selectProfile')}</label>
+              <select className="text-input" value={activePromptProfileId} onChange={(e) => {
+                setActivePromptProfileId(e.target.value)
+                const p = promptProfiles.find((x) => x.id === e.target.value)
+                if (p) setPromptProfileDraft(p)
+              }}>
+                <option value="">— {t('prompt.run.selectProfile')} —</option>
+                {promptProfiles.map((p) => <option key={p.id} value={p.id}>{p.name || p.displayName}</option>)}
+              </select>
+
+              <label className="field-label">{t('prompt.run.selectTemplate')}</label>
+              <select className="text-input" value={activePromptTemplateId} onChange={(e) => {
+                setActivePromptTemplateId(e.target.value)
+                const tmpl = promptTemplates.find((x) => x.id === e.target.value)
+                if (tmpl) { setPromptTemplateDraft(tmpl); setPromptVariableValues({}); setPromptRunResult(null) }
+              }}>
+                <option value="">— {t('prompt.run.selectTemplate')} —</option>
+                {promptTemplates.map((tmpl) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>)}
+              </select>
+
+              {activeTemplate && activeTemplate.variables.map((v) => (
+                <div key={v.key}>
+                  <label className="field-label">{v.label || v.key}</label>
+                  <input
+                    className="text-input"
+                    value={promptVariableValues[v.key] ?? ''}
+                    onChange={(e) => setPromptVariableValues((prev) => ({ ...prev, [v.key]: e.target.value }))}
+                    placeholder={v.placeholder}
+                  />
+                </div>
+              ))}
+
+              <label className="field-label">{t('prompt.run.provider')}</label>
+              <select className="text-input" value={promptProvider} onChange={(e) => setPromptProvider(e.target.value)}>
+                <option value="local">local</option>
+                <option value="openai">openai</option>
+                <option value="gemini">gemini</option>
+                <option value="claude">claude</option>
+              </select>
+
+              {preview && (
+                <>
+                  <label className="field-label" style={{ marginTop: '0.75rem' }}>{t('prompt.run.preview')}</label>
+                  <pre className="code-block" style={{ whiteSpace: 'pre-wrap', maxHeight: '160px', overflowY: 'auto', fontSize: '0.8rem' }}>{preview}</pre>
+                </>
+              )}
+
+              <button type="button" onClick={() => void handleRunPrompt()} disabled={promptBusy || !centralHome || !activePromptProfileId || !activePromptTemplateId} style={{ marginTop: '0.75rem' }}>
+                {promptBusy ? '...' : t('prompt.run.call')}
+              </button>
+            </div>
+
+            {promptRunResult && (
+              <div className="form-section" style={{ marginTop: '1rem' }}>
+                <div className="panel-header">
+                  <label className="field-label">{t('prompt.run.result')}</label>
+                  <button type="button" className="ghost-btn" onClick={() => void navigator.clipboard.writeText(promptRunResult.result)}>{t('prompt.run.copy')}</button>
+                </div>
+                <pre className="code-block" style={{ whiteSpace: 'pre-wrap', maxHeight: '320px', overflowY: 'auto', fontSize: '0.85rem' }}>{promptRunResult.result}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   function renderHealth() {
     return (
       <div className="settings-layout">
@@ -4177,6 +4567,7 @@ function App() {
           {activeTab === 'records' && renderRecords()}
           {activeTab === 'logs' && renderLogs()}
           {activeTab === 'ai' && renderAi()}
+          {activeTab === 'prompt' && renderPromptService()}
           {activeTab === 'integrations' && renderIntegrations()}
           {activeTab === 'settings' && renderSettings()}
           {activeTab === 'health' && renderHealth()}

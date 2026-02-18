@@ -6,5 +6,6 @@ pub mod health;
 pub mod keychain;
 pub mod notion;
 pub mod notebooklm;
+pub mod prompt_service;
 pub mod search;
 pub mod settings;

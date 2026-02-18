@@ -53,6 +53,13 @@ fn main() {
             commands::notebooklm::notebooklm_create_notebook,
             commands::notebooklm::notebooklm_add_record_source,
             commands::notebooklm::notebooklm_ask,
+            commands::prompt_service::list_prompt_profiles,
+            commands::prompt_service::upsert_prompt_profile,
+            commands::prompt_service::delete_prompt_profile,
+            commands::prompt_service::list_prompt_templates,
+            commands::prompt_service::upsert_prompt_template,
+            commands::prompt_service::delete_prompt_template,
+            commands::prompt_service::run_prompt_service,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
