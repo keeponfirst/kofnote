@@ -17,7 +17,6 @@ Use OpenSpec as SSOT before implementation changes:
 ```bash
 # one-time setup
 npm install -g @fission-ai/openspec@latest
-cd /Users/pershing/Documents/henry/Fun/kofnote
 openspec init
 
 # per change
@@ -92,7 +91,6 @@ This app reads/writes the same storage layout as `keeponfirst-local-brain`:
 ## Run
 
 ```bash
-cd /Users/pershing/Documents/henry/Fun/kofnote
 python3 main.py
 ```
 
@@ -114,7 +112,6 @@ python3 main.py
 ## Tests
 
 ```bash
-cd /Users/pershing/Documents/henry/Fun/kofnote
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
