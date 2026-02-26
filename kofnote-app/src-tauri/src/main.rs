@@ -3,6 +3,7 @@
 mod commands;
 mod providers;
 mod storage;
+mod tray;
 mod types;
 mod util;
 
@@ -12,6 +13,19 @@ use types::DebateLock;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            tray::setup_tray(&app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .manage(DebateLock(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             commands::core::resolve_central_home,
@@ -60,6 +74,7 @@ fn main() {
             commands::prompt_service::upsert_prompt_template,
             commands::prompt_service::delete_prompt_template,
             commands::prompt_service::run_prompt_service,
+            commands::capture::quick_capture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

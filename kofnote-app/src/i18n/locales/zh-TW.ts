@@ -171,6 +171,13 @@ const zhTW = {
   'prompt.run.copy': '複製結果',
   'prompt.run.noProfile': '請先選擇一個 Profile。',
   'prompt.run.noTemplate': '請先選擇一個模板。',
+
+  'capture.toast.captured': '已捕捉，AI 分析中...',
+  'capture.toast.empty': '剪貼簿無內容',
+  'capture.notify.saved': '已儲存為 {{type}}',
+  'capture.notify.failed': '捕捉失敗',
+  'capture.notify.failedBody': '請在設定中設定 AI API Key',
+  'capture.notify.noKey': '未設定 AI key，已存為純筆記',
 } as const
 
 export default zhTW

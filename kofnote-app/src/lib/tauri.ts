@@ -858,6 +858,19 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
       }
       return result as T
     }
+    case 'quick_capture': {
+      const centralHome = String(args.centralHome ?? mockState.centralHome)
+      const content = String(args.content ?? '')
+      const created = recordFromPayload(centralHome, {
+        recordType: 'note',
+        title: `Quick Capture: ${content.slice(0, 60)}`,
+        sourceText: content,
+        finalBody: '⏳ AI 分析中...',
+        tags: ['quick-capture'],
+      })
+      mockState.records.unshift(created)
+      return (created.jsonPath ?? '') as T
+    }
     default:
       throw new Error(`Mock runtime: unsupported command ${command}`)
   }
@@ -1128,6 +1141,14 @@ export async function deletePromptTemplate(centralHome: string, id: string): Pro
 
 export async function runPromptService(centralHome: string, request: PromptRunRequest): Promise<PromptRunResponse> {
   return invokeCommand<PromptRunResponse>('run_prompt_service', { centralHome, request })
+}
+
+export async function quickCapture(args: {
+  centralHome: string
+  content: string
+  sourceHint?: string
+}): Promise<string> {
+  return invokeCommand<string>('quick_capture', args)
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {

@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod capture;
 pub mod core;
 pub mod debate;
 pub mod export;

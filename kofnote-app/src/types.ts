@@ -405,3 +405,15 @@ export type PromptRunResponse = {
   resolvedPrompt: string
   provider: string
 }
+
+export type CaptureCompletePayload = {
+  jsonPath: string
+  recordType: string
+  title: string
+  tags: string[]
+}
+
+export type CaptureFailedPayload = {
+  jsonPath: string
+  error: string
+}

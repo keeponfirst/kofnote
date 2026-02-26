@@ -3,5 +3,13 @@
   "identifier": "default",
   "description": "Default capability",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "clipboard-manager:allow-read-text",
+    "notification:allow-send-notification",
+    "notification:allow-request-permission"
+  ]
 }

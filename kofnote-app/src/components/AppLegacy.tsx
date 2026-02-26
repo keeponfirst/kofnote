@@ -49,6 +49,7 @@ import {
   syncRecordsBidirectional,
   setOpenaiApiKey,
   upsertRecord,
+  quickCapture,
   listPromptProfiles,
   upsertPromptProfile,
   deletePromptProfile,
@@ -93,6 +94,8 @@ import type {
   RecordPayload,
   RecordType,
   SearchResult,
+  CaptureCompletePayload,
+  CaptureFailedPayload,
   WorkspaceProfile,
 } from '../types'
 
@@ -1189,6 +1192,74 @@ function App() {
       unlisten?.()
     }
   }, [])
+
+  // Quick Capture: register global shortcut + listen for capture events
+  useEffect(() => {
+    if (!centralHome) return
+
+    const cleanups: Array<() => void> = []
+    let active = true
+
+    void (async () => {
+      try {
+        const [{ register, unregister }, { readText }, { sendNotification }, { listen: listenEvent }] = await Promise.all([
+          import('@tauri-apps/plugin-global-shortcut'),
+          import('@tauri-apps/plugin-clipboard-manager'),
+          import('@tauri-apps/plugin-notification'),
+          import('@tauri-apps/api/event'),
+        ])
+
+        if (!active) return
+
+        await register('CommandOrControl+Shift+K', async () => {
+          try {
+            const content = await readText()
+            if (!content?.trim()) {
+              pushNotice('info', t('capture.toast.empty'))
+              return
+            }
+            pushNotice('info', t('capture.toast.captured'))
+            await quickCapture({ centralHome, content })
+          } catch (err) {
+            pushNotice('error', String(err))
+          }
+        })
+        cleanups.push(() => { void unregister('CommandOrControl+Shift+K').catch(() => {}) })
+
+        const unlistenComplete = await listenEvent<CaptureCompletePayload>('capture_complete', (event) => {
+          const { recordType, title } = event.payload
+          try { sendNotification({ title: `KOF Note — ${t('capture.notify.saved', { type: recordType })}`, body: title }) } catch { /* ignore */ }
+          if (centralHome) {
+            void refreshCore(centralHome).then((data) => {
+              setDisplayedRecords(data.records)
+              setSearchMeta(null)
+            }).catch(() => {})
+          }
+        })
+        cleanups.push(unlistenComplete)
+
+        const unlistenFailed = await listenEvent<CaptureFailedPayload>('capture_failed', (event) => {
+          const { error } = event.payload
+          if (error === 'NO_AI_KEY') {
+            pushNotice('info', t('capture.notify.noKey'))
+            try { sendNotification({ title: `KOF Note — ${t('capture.notify.noKey')}`, body: '' }) } catch { /* ignore */ }
+          } else {
+            pushNotice('error', t('capture.notify.failed'))
+            try { sendNotification({ title: `KOF Note — ${t('capture.notify.failed')}`, body: t('capture.notify.failedBody') }) } catch { /* ignore */ }
+          }
+        })
+        cleanups.push(unlistenFailed)
+      } catch {
+        // Plugin not available (mock runtime) — skip silently
+      }
+    })()
+
+    return () => {
+      active = false
+      for (const cleanup of cleanups) cleanup()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centralHome])
 
   useEffect(() => {
     if (!centralHome) {

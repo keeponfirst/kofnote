@@ -171,6 +171,13 @@ const en = {
   'prompt.run.copy': 'Copy Result',
   'prompt.run.noProfile': 'Please select a profile.',
   'prompt.run.noTemplate': 'Please select a template.',
+
+  'capture.toast.captured': 'Captured, AI analyzing...',
+  'capture.toast.empty': 'Clipboard is empty',
+  'capture.notify.saved': 'Saved as {{type}}',
+  'capture.notify.failed': 'Capture failed',
+  'capture.notify.failedBody': 'Please set AI API key in Settings',
+  'capture.notify.noKey': 'No AI key configured, saved as plain note',
 } as const
 
 export default en

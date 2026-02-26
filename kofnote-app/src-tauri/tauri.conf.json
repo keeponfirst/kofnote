@@ -31,7 +31,11 @@
       "endpoints": [],
       "dialog": true,
       "pubkey": ""
-    }
+    },
+    "global-shortcut": {
+      "shortcuts": ["CommandOrControl+Shift+K"]
+    },
+    "notification": {}
   },
   "bundle": {
     "active": true,

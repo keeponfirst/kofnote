@@ -65,6 +65,19 @@ Now includes M7 connectors for Notion + NotebookLM.
   - `notion_last_edited_time`
   - `notion_last_synced_hash`
 
+### Quick Capture + System Tray
+- **Global hotkey** `Cmd+Shift+K` (macOS) / `Ctrl+Shift+K` (Windows/Linux) to capture clipboard content from any app
+  **全域快捷鍵** `Cmd+Shift+K` 從任何 app 捕捉剪貼簿內容
+- System Tray residence — closing the window hides to tray, hotkey always available
+  System Tray 常駐 — 關閉視窗隱藏到系統列，快捷鍵隨時可用
+- Instant save as provisional note + background AI analysis (type / title / summary / tags)
+  立即存為暫定筆記 + 背景 AI 分析（類型 / 標題 / 摘要 / 標籤）
+- AI provider auto-selection: Claude → OpenAI → Gemini (based on configured API keys)
+  AI 供應者自動選擇：Claude → OpenAI → Gemini（依已設定的 API key）
+- macOS system notification on completion
+  分析完成後發送 macOS 系統通知
+- Tauri plugins: `global-shortcut`, `clipboard-manager`, `notification`
+
 ### Debate Provider Registry (config layer)
 - Provider abstraction added as a registry-backed settings layer (`providerRegistry.providers[]`):
   - `id`
