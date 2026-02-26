@@ -126,7 +126,7 @@ PATH="$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH" <command>
 ## Install
 
 ```bash
-cd /Users/pershing/Documents/henry/Fun/kofnote/kofnote-app
+cd kofnote-app
 npm install
 ```
 
