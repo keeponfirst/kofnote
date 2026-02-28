@@ -36,6 +36,8 @@ fn main() {
             commands::core::delete_record,
             commands::search::rebuild_search_index,
             commands::search::search_records,
+            commands::search::unified_search,
+            commands::search::get_timeline,
             commands::ai::run_ai_analysis,
             commands::debate::run_debate_mode,
             commands::debate::replay_debate_mode,

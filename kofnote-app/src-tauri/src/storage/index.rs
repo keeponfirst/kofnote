@@ -1,4 +1,6 @@
-use crate::{types::{Record, SEARCH_DB_FILE}, util::*};
+use crate::storage::memory::{load_all_memory_files, memory_entry_to_unified_item, MemoryEntry};
+use crate::types::{Record, UnifiedMemoryItem, SEARCH_DB_FILE};
+use crate::util::*;
 use chrono::Local;
 use rusqlite::{params, params_from_iter, Connection};
 use std::collections::HashMap;
@@ -76,6 +78,15 @@ pub(crate) fn ensure_index_schema(conn: &Connection) -> Result<(), String> {
             due TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'OPEN',
             PRIMARY KEY (run_id, action_id)
+         );
+         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+            file_path UNINDEXED,
+            source_type,
+            title,
+            body,
+            created_at,
+            openclaw_source,
+            metadata_json UNINDEXED
          );",
     )
     .map_err(|error| error.to_string())
@@ -145,7 +156,27 @@ pub(crate) fn rebuild_index(central_home: &Path, records: &[Record]) -> Result<u
     .map_err(|error| error.to_string())?;
 
     tx.commit().map_err(|error| error.to_string())?;
+
+    // Index memory files from the workspace (parent of central_home)
+    let workspace = resolve_workspace_from_central_home(central_home);
+    if let Some(ws) = workspace {
+        let _ = index_memory_files(&ws, &conn);
+    }
+
     Ok(records.len())
+}
+
+/// Resolve the OpenClaw workspace directory from central_home.
+/// central_home is typically <workspace>/keeponfirst-local-brain,
+/// and memory/ lives at <workspace>/memory/.
+pub(crate) fn resolve_workspace_from_central_home(central_home: &Path) -> Option<PathBuf> {
+    let parent = central_home.parent()?;
+    let memory_dir = parent.join("memory");
+    if memory_dir.is_dir() {
+        Some(parent.to_path_buf())
+    } else {
+        None
+    }
 }
 
 pub(crate) fn search_records_in_index(
@@ -323,6 +354,162 @@ pub(crate) fn delete_index_record_if_exists(central_home: &Path, json_path: &str
         .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+// --- Second Brain P0: Memory indexing ---
+
+/// Index all memory/*.md files into memory_fts.
+/// Called by rebuild_index after records are indexed.
+pub(crate) fn index_memory_files(
+    workspace: &Path,
+    conn: &Connection,
+) -> Result<usize, String> {
+    // Clear existing memory index
+    conn.execute("DELETE FROM memory_fts", [])
+        .map_err(|e| e.to_string())?;
+
+    let entries = load_all_memory_files(workspace);
+
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO memory_fts (
+                file_path, source_type, title, body, created_at, openclaw_source, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut count = 0;
+    for entry in &entries {
+        let metadata_json = build_memory_metadata_json(entry);
+        stmt.execute(params![
+            entry.file_path.to_string_lossy().to_string(),
+            entry.source_type,
+            entry.title,
+            entry.body,
+            entry.created_at,
+            entry.openclaw_source.clone().unwrap_or_default(),
+            metadata_json,
+        ])
+        .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+
+    // Update meta
+    conn.execute(
+        "INSERT INTO records_index_meta (key, value) VALUES ('memoryCount', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![count.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(count)
+}
+
+fn build_memory_metadata_json(entry: &MemoryEntry) -> String {
+    let mut map = serde_json::Map::new();
+    if let Some(ref src) = entry.openclaw_source {
+        map.insert("openclawSource".to_string(), serde_json::json!(src));
+    }
+    if let Some(ref sid) = entry.session_id {
+        map.insert("sessionId".to_string(), serde_json::json!(sid));
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// Search memory_fts and return UnifiedMemoryItems.
+pub(crate) fn search_memory_in_index(
+    central_home: &Path,
+    query: &str,
+    date_from: Option<&str>,
+    date_to: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> Result<(Vec<UnifiedMemoryItem>, usize), String> {
+    let conn = open_index_connection(central_home)?;
+    ensure_index_schema(&conn)?;
+
+    let mut where_clauses = Vec::new();
+    let mut bindings = Vec::new();
+
+    where_clauses.push("memory_fts MATCH ?".to_string());
+    bindings.push(query.to_string());
+
+    if let Some(df) = date_from {
+        where_clauses.push("substr(created_at, 1, 10) >= ?".to_string());
+        bindings.push(df.to_string());
+    }
+    if let Some(dt) = date_to {
+        where_clauses.push("substr(created_at, 1, 10) <= ?".to_string());
+        bindings.push(dt.to_string());
+    }
+
+    let where_sql = format!("WHERE {}", where_clauses.join(" AND "));
+
+    let count_sql = format!("SELECT COUNT(*) FROM memory_fts {where_sql}");
+    let total: usize = conn
+        .query_row(&count_sql, params_from_iter(bindings.iter()), |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let select_sql = format!(
+        "SELECT
+            file_path,
+            source_type,
+            title,
+            body,
+            created_at,
+            openclaw_source,
+            metadata_json,
+            snippet(memory_fts, 3, '<mark>', '</mark>', '...', 48) AS snip
+        FROM memory_fts
+        {where_sql}
+        ORDER BY bm25(memory_fts), created_at DESC
+        LIMIT {limit} OFFSET {offset}"
+    );
+
+    let mut stmt = conn.prepare(&select_sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params_from_iter(bindings.iter()), |row| {
+            let file_path: String = row.get(0)?;
+            let source_type: String = row.get(1)?;
+            let title: String = row.get(2)?;
+            let body: String = row.get(3)?;
+            let created_at: String = row.get(4)?;
+            let openclaw_source: String = row.get(5)?;
+            let metadata_json: String = row.get(6)?;
+            let snippet: String = row.get::<_, String>(7).unwrap_or_default();
+
+            let metadata: Option<serde_json::Value> =
+                serde_json::from_str(&metadata_json).ok().filter(|v: &serde_json::Value| !v.as_object().map_or(true, |m| m.is_empty()));
+
+            Ok(UnifiedMemoryItem {
+                id: file_path,
+                source: "memory".to_string(),
+                source_type,
+                title,
+                snippet,
+                body,
+                created_at,
+                tags: Vec::new(),
+                relevance_score: None,
+                metadata,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok((items, total))
+}
+
+/// Load all memory items (no search query — for timeline use).
+pub(crate) fn load_all_memory_items(workspace: &Path) -> Vec<UnifiedMemoryItem> {
+    load_all_memory_files(workspace)
+        .iter()
+        .map(|e| memory_entry_to_unified_item(e, 200))
+        .collect()
 }
 
 pub(crate) fn index_db_path(central_home: &Path) -> PathBuf {

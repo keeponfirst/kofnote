@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import TimelineTab from './TimelineTab'
 import {
   forceCenter,
   forceCollide,
@@ -99,7 +100,7 @@ import type {
   WorkspaceProfile,
 } from '../types'
 
-type TabKey = 'dashboard' | 'records' | 'logs' | 'ai' | 'integrations' | 'settings' | 'health' | 'prompt'
+type TabKey = 'dashboard' | 'records' | 'timeline' | 'logs' | 'ai' | 'integrations' | 'settings' | 'health' | 'prompt'
 
 type SearchMeta = {
   indexed: boolean
@@ -122,7 +123,7 @@ type RecordFormState = {
   sourceText: string
 }
 
-const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'logs', 'ai', 'prompt', 'integrations', 'settings', 'health']
+const TAB_ITEMS: TabKey[] = ['dashboard', 'records', 'timeline', 'logs', 'ai', 'prompt', 'integrations', 'settings', 'health']
 
 type TemplateValues = Record<string, string | number>
 
@@ -616,6 +617,8 @@ function App() {
           return t('tab.dashboard')
         case 'records':
           return t('tab.records')
+        case 'timeline':
+          return t('tab.timeline')
         case 'logs':
           return t('tab.logs')
         case 'ai':
@@ -4636,6 +4639,7 @@ function App() {
         <main className="workspace-main">
           {activeTab === 'dashboard' && renderDashboard()}
           {activeTab === 'records' && renderRecords()}
+          {activeTab === 'timeline' && <TimelineTab centralHome={centralHome} t={t} />}
           {activeTab === 'logs' && renderLogs()}
           {activeTab === 'ai' && renderAi()}
           {activeTab === 'prompt' && renderPromptService()}

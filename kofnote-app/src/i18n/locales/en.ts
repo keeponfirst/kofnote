@@ -10,6 +10,7 @@ const en = {
   'tab.settings': 'Settings',
   'tab.health': 'Health',
   'tab.prompt': 'Prompt',
+  'tab.timeline': 'Timeline',
 
   'common.none': 'none',
   'common.noData': 'No data yet',
@@ -171,6 +172,17 @@ const en = {
   'prompt.run.copy': 'Copy Result',
   'prompt.run.noProfile': 'Please select a profile.',
   'prompt.run.noTemplate': 'Please select a template.',
+
+  'timeline.day': 'Day',
+  'timeline.week': 'Week',
+  'timeline.month': 'Month',
+  'timeline.loading': 'Loading...',
+  'timeline.total': 'Total',
+  'timeline.searchPlaceholder': 'Search across records & memory...',
+  'timeline.searchResults': 'Results',
+  'timeline.noResults': 'No results found.',
+  'timeline.noData': 'No data yet. Records and memory will appear here.',
+  'timeline.noCentralHome': 'Please select a Central Home first.',
 
   'capture.toast.captured': 'Captured, AI analyzing...',
   'capture.toast.empty': 'Clipboard is empty',

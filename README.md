@@ -80,6 +80,32 @@ If no API key is configured, the note is saved as-is without AI analysis.
 - **Right-click** for menu: "顯示 KOF Note" / "結束".
   **右鍵點擊** 開啟選單：「顯示 KOF Note」/「結束」。
 
+## Second Brain Integration (P0)
+
+KOF Note now bridges two data silos into a unified knowledge layer:
+
+| Source | Origin | Format |
+|--------|--------|--------|
+| Records | `keeponfirst-local-brain` | `records/**/*.json` |
+| Memory | OpenClaw session memory | `memory/*.md` |
+
+### Features
+
+- **Timeline View** — new tab showing all records and memory entries on a chronological timeline, grouped by day / week / month
+- **Unified Search** — cross-source full-text search (SQLite FTS5) across records and memory with highlighted snippets
+- **Source Filtering** — toggle records / memory visibility in both timeline and search
+- **Memory Parser** — reads OpenClaw `memory/*.md` files (session format and daily summary format) as read-only indexed data
+- **OpenClaw Telegram Capture** — zero-friction note capture via existing OpenClaw Telegram bot channel (no custom bot needed)
+
+### Data flow
+
+```
+Telegram → OpenClaw Bot → memory/*.md ─┐
+                                        ├→ SQLite FTS5 (memory_fts) ─→ Timeline / Search UI
+keeponfirst-local-brain → records/**  ──┤
+                                        └→ SQLite FTS5 (records_fts) ─→ Timeline / Search UI
+```
+
 ## Data compatibility
 
 This app reads/writes the same storage layout as `keeponfirst-local-brain`:
@@ -87,6 +113,7 @@ This app reads/writes the same storage layout as `keeponfirst-local-brain`:
 - `records/{decisions,worklogs,ideas,backlogs,other}/*.json`
 - `records/{...}/*.md`
 - `.agentic/logs/*.json`
+- `memory/*.md` (read-only, indexed for search and timeline)
 
 ## Run
 

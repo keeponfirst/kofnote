@@ -417,3 +417,41 @@ export type CaptureFailedPayload = {
   jsonPath: string
   error: string
 }
+
+// --- Second Brain P0: Unified Memory ---
+
+export type MemorySource = 'record' | 'memory'
+
+export type UnifiedMemoryItem = {
+  id: string
+  source: MemorySource
+  sourceType: string
+  title: string
+  snippet: string
+  body: string
+  createdAt: string
+  tags: string[]
+  relevanceScore?: number
+  metadata?: Record<string, unknown>
+}
+
+export type UnifiedSearchResult = {
+  items: UnifiedMemoryItem[]
+  total: number
+  tookMs: number
+  sourceCounts: Record<string, number>
+}
+
+export type TimelineGroup = {
+  label: string
+  date: string
+  items: UnifiedMemoryItem[]
+  count: number
+  sourceCounts: Record<string, number>
+}
+
+export type TimelineResponse = {
+  groups: TimelineGroup[]
+  totalGroups: number
+  totalItems: number
+}

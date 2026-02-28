@@ -103,12 +103,42 @@ Now includes M7 connectors for Notion + NotebookLM.
 - Example config:
   - `examples/providers.example.json`
 
+### Second Brain P0 — Timeline + Unified Search
+
+Bridges `keeponfirst-local-brain` records and OpenClaw session memory into a unified knowledge layer.
+
+- **Timeline Tab** (`TimelineTab.tsx`): chronological view of all records and memory entries
+  - Group by day / week / month
+  - Source filter toggles (records / memory)
+  - Debounced cross-source search with highlighted snippets
+  - Detail panel with full content preview
+- **Unified Search** (`unified_search` command): merges `records_fts` and `memory_fts` FTS5 results at query time
+- **Memory Parser** (`storage/memory.rs`): parses OpenClaw `memory/*.md` files (session format + daily summary format)
+- **Memory FTS5 Index** (`memory_fts` table): read-only indexing of memory files into SQLite FTS5, rebuilt alongside records index
+- **Timeline API** (`get_timeline` command): loads all sources, groups by configurable time bucket
+- i18n: full EN + zh-TW translations for all timeline strings
+
+New/modified files:
+| File | Change |
+|------|--------|
+| `src/components/TimelineTab.tsx` | New — Timeline tab UI component |
+| `src-tauri/src/storage/memory.rs` | New — Memory file parser + unit tests |
+| `src-tauri/src/storage/index.rs` | Extended — `memory_fts` table, indexing, search |
+| `src-tauri/src/commands/search.rs` | Extended — `unified_search` + `get_timeline` commands |
+| `src/types.ts` | Extended — `UnifiedMemoryItem`, `TimelineResponse` DTOs |
+| `src-tauri/src/types.rs` | Extended — Rust struct equivalents |
+| `src/lib/tauri.ts` | Extended — `unifiedSearch()` + `getTimeline()` bridge |
+| `src/components/AppLegacy.tsx` | Extended — Timeline tab routing |
+| `src/index.css` | Extended — Timeline styles |
+| `src/i18n/locales/{en,zh-TW}.ts` | Extended — Timeline i18n strings |
+
 ## Data compatibility
 
 Reads and writes are compatible with `keeponfirst-local-brain`:
 
 - `records/{decisions,worklogs,ideas,backlogs,other}/*.json|*.md`
 - `.agentic/logs/*.json`
+- `memory/*.md` (read-only, indexed for unified search and timeline)
 
 ## Requirements
 

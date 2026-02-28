@@ -149,6 +149,50 @@ pub struct RebuildIndexResult {
     took_ms: u128,
 }
 
+// --- Second Brain P0: Unified Memory ---
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedMemoryItem {
+    pub id: String,
+    pub source: String,
+    pub source_type: String,
+    pub title: String,
+    pub snippet: String,
+    pub body: String,
+    pub created_at: String,
+    pub tags: Vec<String>,
+    pub relevance_score: Option<f64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedSearchResult {
+    pub items: Vec<UnifiedMemoryItem>,
+    pub total: usize,
+    pub took_ms: u128,
+    pub source_counts: HashMap<String, usize>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineGroup {
+    pub label: String,
+    pub date: String,
+    pub items: Vec<UnifiedMemoryItem>,
+    pub count: usize,
+    pub source_counts: HashMap<String, usize>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineResponse {
+    pub groups: Vec<TimelineGroup>,
+    pub total_groups: usize,
+    pub total_items: usize,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiAnalysisResponse {
@@ -1688,7 +1732,7 @@ fn list_debate_runs_internal(central_home: &Path) -> Result<Vec<DebateRunSummary
     Ok(runs)
 }
 
-fn normalized_home(input: &str) -> Result<PathBuf, String> {
+pub(crate) fn normalized_home(input: &str) -> Result<PathBuf, String> {
     if input.trim().is_empty() {
         return Err("Central Home path is required".to_string());
     }

@@ -27,6 +27,8 @@ import type {
   RecordPayload,
   ResolvedHome,
   SearchResult,
+  TimelineResponse,
+  UnifiedSearchResult,
 } from '../types'
 
 const DEFAULT_MOCK_HOME = '/mock/keeponfirst-local-brain'
@@ -1149,6 +1151,31 @@ export async function quickCapture(args: {
   sourceHint?: string
 }): Promise<string> {
   return invokeCommand<string>('quick_capture', args)
+}
+
+// --- Second Brain P0: Unified Search + Timeline ---
+
+export async function unifiedSearch(args: {
+  centralHome: string
+  query: string
+  sources?: string[]
+  dateFrom?: string
+  dateTo?: string
+  limit?: number
+  offset?: number
+}): Promise<UnifiedSearchResult> {
+  return invokeCommand<UnifiedSearchResult>('unified_search', args)
+}
+
+export async function getTimeline(args: {
+  centralHome: string
+  groupBy: string
+  sources?: string[]
+  dateFrom?: string
+  dateTo?: string
+  limit?: number
+}): Promise<TimelineResponse> {
+  return invokeCommand<TimelineResponse>('get_timeline', args)
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {

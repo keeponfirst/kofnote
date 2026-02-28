@@ -10,6 +10,7 @@ const zhTW = {
   'tab.settings': '設定',
   'tab.health': '健康',
   'tab.prompt': 'Prompt 服務',
+  'tab.timeline': '時間軸',
 
   'common.none': '無',
   'common.noData': '尚無資料',
@@ -171,6 +172,17 @@ const zhTW = {
   'prompt.run.copy': '複製結果',
   'prompt.run.noProfile': '請先選擇一個 Profile。',
   'prompt.run.noTemplate': '請先選擇一個模板。',
+
+  'timeline.day': '日',
+  'timeline.week': '週',
+  'timeline.month': '月',
+  'timeline.loading': '載入中...',
+  'timeline.total': '總計',
+  'timeline.searchPlaceholder': '搜尋紀錄與記憶...',
+  'timeline.searchResults': '搜尋結果',
+  'timeline.noResults': '找不到結果。',
+  'timeline.noData': '尚無資料。紀錄與記憶會顯示在這裡。',
+  'timeline.noCentralHome': '請先選擇中央記錄路徑。',
 
   'capture.toast.captured': '已捕捉，AI 分析中...',
   'capture.toast.empty': '剪貼簿無內容',
