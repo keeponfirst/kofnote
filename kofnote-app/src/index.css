@@ -939,6 +939,19 @@ option {
   height: 78%;
 }
 
+.constellation-ring.ring-c {
+  width: 92%;
+  height: 92%;
+}
+
+.memory-node {
+  min-width: 74px;
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-style: dashed;
+}
+
 .const-node {
   position: absolute;
   transform: translate(-50%, -50%);

@@ -49,6 +49,7 @@ const zhTW = {
   'records.constellation.subtitle': '類型與標籤叢集',
   'records.constellation.hint': '點擊節點可直接篩選',
   'records.constellation.core': '核心',
+  'records.constellation.memory': '記憶',
   'records.panel.listTitle': '紀錄流',
   'records.panel.listSub': '瀏覽與篩選條目',
   'records.panel.editorTitle': '紀錄編輯器',

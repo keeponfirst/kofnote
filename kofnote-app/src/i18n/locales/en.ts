@@ -49,6 +49,7 @@ const en = {
   'records.constellation.subtitle': 'Type and tag cluster map',
   'records.constellation.hint': 'Click node to filter',
   'records.constellation.core': 'CORE',
+  'records.constellation.memory': 'Memory',
   'records.panel.listTitle': 'Records Stream',
   'records.panel.listSub': 'Navigate and filter entries',
   'records.panel.editorTitle': 'Record Editor',

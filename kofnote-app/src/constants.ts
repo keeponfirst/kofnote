@@ -26,5 +26,7 @@ export const DEFAULT_DEBATE_MODEL_BY_PROVIDER: Record<string, string> = {
   'claude-web': 'auto',
 }
 
+export const MEMORY_COLOR = '#10b981'
+
 export const DASHBOARD_GRAPH_WIDTH = 980
 export const DASHBOARD_GRAPH_HEIGHT = 480

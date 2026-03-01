@@ -57,6 +57,7 @@ import {
   listPromptTemplates,
   upsertPromptTemplate,
   deletePromptTemplate,
+  getTimeline,
 } from '../lib/tauri'
 import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from '../i18n'
 import { buildProviderRegistrySettings, ProviderRegistry } from '../lib/providerRegistry'
@@ -68,6 +69,7 @@ import {
   DEFAULT_MODEL,
   LOCAL_STORAGE_KEY,
   LOCAL_STORAGE_LANGUAGE_KEY,
+  MEMORY_COLOR,
   RECORD_TYPES,
   TYPE_COLORS,
 } from '../constants'
@@ -97,6 +99,7 @@ import type {
   SearchResult,
   CaptureCompletePayload,
   CaptureFailedPayload,
+  UnifiedMemoryItem,
   WorkspaceProfile,
 } from '../types'
 
@@ -477,6 +480,7 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [health, setHealth] = useState<HealthDiagnostics | null>(null)
+  const [memoryItems, setMemoryItems] = useState<UnifiedMemoryItem[]>([])
 
   const [selectedRecordPath, setSelectedRecordPath] = useState<string | null>(null)
   const [recordForm, setRecordForm] = useState<RecordFormState>(emptyForm())
@@ -1289,6 +1293,16 @@ function App() {
 
     return () => window.clearInterval(handle)
   }, [appSettings.pollIntervalSec, centralHome, fingerprint, pushNotice, refreshCore, t])
+
+  useEffect(() => {
+    if (!centralHome) return
+    void getTimeline({ centralHome, groupBy: 'day', sources: ['memory'], limit: 100 })
+      .then((res) => {
+        const items = res.groups.flatMap((g) => g.items)
+        setMemoryItems(items)
+      })
+      .catch(() => {})
+  }, [centralHome])
 
   const handleSaveRecord = useCallback(async () => {
     if (!centralHome) {
@@ -2544,6 +2558,12 @@ function App() {
         tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
       }
     }
+    for (const item of memoryItems) {
+      for (const tag of item.tags) {
+        if (!tag) continue
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+      }
+    }
     const tagNodes = [...tagCounts.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 16)
@@ -2559,6 +2579,20 @@ function App() {
           y: 50 + Math.sin(angle) * ring,
         }
       })
+
+    const memorySourceCounts = new Map<string, number>()
+    for (const item of memoryItems) {
+      memorySourceCounts.set(item.sourceType, (memorySourceCounts.get(item.sourceType) ?? 0) + 1)
+    }
+    const memoryNodes = [...memorySourceCounts.entries()].map(([sourceType, count], index, source) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, source.length) + Math.PI / 4
+      return {
+        sourceType,
+        count,
+        x: 50 + Math.cos(angle) * 47,
+        y: 50 + Math.sin(angle) * 44,
+      }
+    })
 
     return (
       <div className="page-stack">
@@ -2596,6 +2630,7 @@ function App() {
           <div className="records-constellation">
             <div className="constellation-ring ring-a" />
             <div className="constellation-ring ring-b" />
+            {memoryNodes.length > 0 && <div className="constellation-ring ring-c" />}
             <button
               type="button"
               className="const-node core-node"
@@ -2636,6 +2671,23 @@ function App() {
                 onClick={() => setRecordKeyword(node.tag)}
               >
                 <span>{node.tag}</span>
+                <strong>{node.count}</strong>
+              </button>
+            ))}
+            {memoryNodes.map((node) => (
+              <button
+                type="button"
+                key={node.sourceType}
+                className="const-node memory-node"
+                style={{
+                  left: `${node.x}%`,
+                  top: `${node.y}%`,
+                  borderColor: MEMORY_COLOR,
+                  boxShadow: `0 0 12px ${MEMORY_COLOR}44`,
+                }}
+                onClick={() => setRecordKeyword(node.sourceType)}
+              >
+                <span>{t('records.constellation.memory')}: {node.sourceType}</span>
                 <strong>{node.count}</strong>
               </button>
             ))}
