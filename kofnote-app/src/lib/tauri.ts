@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { DEFAULT_PROMPT_TEMPLATES } from './defaultTemplates'
 import type {
   AiAnalysisResponse,
   AppSettings,
@@ -201,18 +202,12 @@ function createMockState(): MockState {
         updatedAt: nowMinus(10),
       },
     ],
-    promptTemplates: [
-      {
-        id: 'pt-daily',
-        name: '每日工作日報',
-        description: '撰寫今日工作重點與進度的日報',
-        content:
-          '我是 {{display_name}}，{{role}} at {{company}}（{{department}}）。\n{{bio}}\n\n今日工作重點：\n{{focus}}\n\n請幫我撰寫一份簡潔清晰的工作日報。',
-        variables: [{ key: 'focus', label: '今日重點', placeholder: '請描述今日主要工作' }],
-        createdAt: nowMinus(10),
-        updatedAt: nowMinus(10),
-      },
-    ],
+    promptTemplates: DEFAULT_PROMPT_TEMPLATES.map((t, i) => ({
+      ...t,
+      id: `pt-default-${i}`,
+      createdAt: nowMinus(10 + i),
+      updatedAt: nowMinus(10 + i),
+    })),
     settings: {
       profiles: [
         {
@@ -1143,6 +1138,28 @@ export async function deletePromptTemplate(centralHome: string, id: string): Pro
 
 export async function runPromptService(centralHome: string, request: PromptRunRequest): Promise<PromptRunResponse> {
   return invokeCommand<PromptRunResponse>('run_prompt_service', { centralHome, request })
+}
+
+/**
+ * 初始化預設 Prompt 模板（僅在模板為空時執行）
+ * @returns 建立的模板數量
+ */
+export async function seedDefaultTemplates(centralHome: string): Promise<number> {
+  const existing = await listPromptTemplates(centralHome)
+  if (existing.length > 0) return 0
+
+  let count = 0
+  for (const tmpl of DEFAULT_PROMPT_TEMPLATES) {
+    const now = new Date().toISOString()
+    await upsertPromptTemplate(centralHome, {
+      ...tmpl,
+      id: '',
+      createdAt: now,
+      updatedAt: now,
+    })
+    count++
+  }
+  return count
 }
 
 export async function quickCapture(args: {

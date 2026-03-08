@@ -57,6 +57,7 @@ import {
   listPromptTemplates,
   upsertPromptTemplate,
   deletePromptTemplate,
+  seedDefaultTemplates,
   getTimeline,
 } from '../lib/tauri'
 import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from '../i18n'
@@ -1008,6 +1009,16 @@ function App() {
       listPromptProfiles(home),
       listPromptTemplates(home),
     ])
+    // 首次使用時自動建立預設模板
+    if (templates.length === 0) {
+      const seeded = await seedDefaultTemplates(home)
+      if (seeded > 0) {
+        const freshTemplates = await listPromptTemplates(home)
+        setPromptProfiles(profiles)
+        setPromptTemplates(freshTemplates)
+        return
+      }
+    }
     setPromptProfiles(profiles)
     setPromptTemplates(templates)
   }, [])
