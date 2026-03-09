@@ -9,6 +9,8 @@ use crate::types::{
 };
 use std::collections::HashMap;
 use std::time::Instant;
+use chrono::Datelike;
+
 
 #[tauri::command]
 pub fn rebuild_search_index(central_home: String) -> Result<RebuildIndexResult, String> {

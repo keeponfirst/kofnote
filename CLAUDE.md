@@ -106,12 +106,70 @@ Central Home 目錄結構（與 `keeponfirst-local-brain` 相容）：
 
 ## OpenSpec Workflow
 
-本專案使用 OpenSpec 作為 SSOT（Single Source of Truth）規格管理：
+本專案使用 OpenSpec 作為 SSOT（Single Source of Truth）規格管理。規格檔案位於 `openspec/` 目錄。
+
+### `/opsx:*` Slash Commands
+
+| 命令 | 用途 |
+|------|------|
+| `/opsx:new` | 建立新 change（proposal → specs → design → tasks） |
+| `/opsx:explore` | 探索現有 specs 和 changes |
+| `/opsx:apply` | 根據 change 的 tasks 執行實作 |
+| `/opsx:verify` | 驗證 change 實作是否符合 specs |
+| `/opsx:archive` | 歸檔已完成的 change |
+| `/opsx:bulk-archive` | 批次歸檔多個已完成 changes |
+| `/opsx:continue` | 繼續未完成的 change |
+| `/opsx:ff` | Fast-forward：快速推進簡單 change |
+| `/opsx:sync` | 同步 specs 與 changes 狀態 |
+| `/opsx:onboard` | 專案導覽與 OpenSpec 使用說明 |
+
+### CLI 指令
+
 ```bash
-openspec new change "<change-id>"
-openspec instructions apply --change "<change-id>"
+openspec new change "<change-id>"          # 建立新 change
+openspec list                              # 列出所有 changes
+openspec instructions apply --change "<id>" # 產生實作指引
 ```
-規格檔案位於 `openspec/` 目錄。
+
+## Superpowers Skills
+
+本專案已整合 [Superpowers](https://github.com/obra/superpowers) 工程紀律技能庫（v4.3.1）。以下技能會在 session 啟動時自動載入，於適當情境觸發：
+
+| 技能 | 觸發時機 |
+|------|---------|
+| `using-superpowers` | Session 啟動時注入基礎行為 |
+| `writing-plans` | 規劃實作方案時 |
+| `executing-plans` | 按計畫逐步實作時 |
+| `test-driven-development` | 撰寫或修改測試時 |
+| `systematic-debugging` | 除錯時使用系統化方法 |
+| `requesting-code-review` | 提交 PR / 請求 review 時 |
+| `receiving-code-review` | 處理 review 回饋時 |
+| `verification-before-completion` | 標記任務完成前的驗證 |
+| `brainstorming` | 腦力激盪 / 方案探索時 |
+| `dispatching-parallel-agents` | 分派平行子任務時 |
+| `subagent-driven-development` | 使用 subagent 完成開發時 |
+| `finishing-a-development-branch` | 完成功能分支、準備合併時 |
+| `using-git-worktrees` | 使用 git worktree 隔離開發時 |
+| `writing-skills` | 撰寫新 skill 定義時 |
+
+## 推薦工作流
+
+OpenSpec 規範驅動 + Superpowers 工程紀律的整合流程：
+
+```
+1. /opsx:new "feature-name"     ← 建立 change，撰寫 proposal
+   ↓ Superpowers: writing-plans
+2. 撰寫 specs/ + design.md      ← 定義規格與設計
+   ↓ Superpowers: brainstorming
+3. 撰寫 tasks.md                ← 拆解可執行任務（每個 ≤2hr）
+   ↓ Superpowers: executing-plans
+4. /opsx:apply                   ← 按 tasks 逐步實作
+   ↓ Superpowers: test-driven-development, systematic-debugging
+5. /opsx:verify                  ← 驗證實作符合 specs
+   ↓ Superpowers: verification-before-completion
+6. /opsx:archive                 ← 歸檔已完成 change
+   ↓ Superpowers: finishing-a-development-branch
+```
 
 ## Key Documentation
 

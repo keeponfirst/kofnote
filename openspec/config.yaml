@@ -1,20 +1,60 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  ## KOF Note — 專案背景
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  ### 技術棧
+  - Frontend: React 19, TypeScript 5.9, Vite 7, d3-force 3
+  - Desktop Shell: Tauri 2 (Rust 2021 edition)
+  - Storage: rusqlite (SQLite FTS5 bundled), serde_json
+  - Security: keyring 2 (OS Keychain), reqwest (rustls)
+  - Testing: Playwright (e2e)
+  - Linting: ESLint 9, typescript-eslint
+
+  ### 架構
+  Desktop User → React UI (App.tsx) → Tauri Bridge (lib/tauri.ts) → Rust Commands (main.rs)
+    ├── Central Home 檔案系統
+    ├── SQLite FTS5 搜尋索引
+    ├── OS Keychain (API keys)
+    ├── OpenAI / Gemini / Claude API
+    └── NotebookLM MCP runtime
+
+  ### 關鍵檔案
+  - kofnote-app/src/components/AppLegacy.tsx — 主 UI 編排、tab 路由、狀態管理
+  - kofnote-app/src/lib/tauri.ts — Tauri invoke 型別封裝 + mock runtime fallback
+  - kofnote-app/src/types.ts — 前後端共用 TypeScript DTO
+  - kofnote-app/src-tauri/src/main.rs — Rust 啟動 wiring
+  - kofnote-app/src-tauri/src/types.rs — Rust 主邏輯與 command 實作
+  - kofnote-app/src-tauri/src/storage/index.rs — SQLite FTS5 索引
+  - kofnote-app/src/lib/providerRegistry.ts — Debate Mode provider 抽象層
+
+  ### 慣例
+  - 回應與文件使用繁體中文
+  - 程式碼註解可中英混用
+  - Commit message 使用 conventional commits
+  - 所有 npm 指令在 kofnote-app/ 下執行
+  - Local-first 優先：資料完全在使用者本機
+  - Central Home 結構與 keeponfirst-local-brain 相容
+
+rules:
+  proposal:
+    - 必須包含 Rollback Plan（至少列出如何安全撤回變更）
+    - 必須列出影響區域（受影響的檔案、模組、或執行時區域）
+    - 使用繁體中文撰寫（技術名詞可保留英文）
+    - 含 "背景(Why)" 和 "變更(What)" 兩大區段
+    - 若涉及 API 變更，需列出向後相容性影響
+  specs:
+    - 必須包含 Acceptance Criteria（可測試的驗收條件）
+    - 必須列出 Edge Cases（至少 3 個邊界情況）
+    - 若涉及 API，需定義完整的 contract（request/response schema）
+    - 規格即 SSOT，實作不得偏離規格定義
+  design:
+    - 必須列出所有需修改的檔案路徑
+    - 必須包含驗證指令（如何確認設計決策正確實作）
+    - 設計決策需列出備選方案及拒絕理由
+    - 含 Migration Plan（步驟化的遷移計畫）
+  tasks:
+    - 每個 task 預估工時 ≤ 2 小時
+    - 每個 task 必須可追溯至 specs 中的 requirement
+    - 每個 task 必須包含驗證指令（如何確認 task 已正確完成）
+    - 使用 checkbox 格式（- [ ] / - [x]）追蹤完成狀態

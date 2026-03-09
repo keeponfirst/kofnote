@@ -25,21 +25,12 @@
       "csp": null
     }
   },
-  "plugins": {
-    "updater": {
-      "active": false,
-      "endpoints": [],
-      "dialog": true,
-      "pubkey": ""
-    },
-    "global-shortcut": {
-      "shortcuts": ["CommandOrControl+Shift+K"]
-    },
-    "notification": {}
-  },
+  "plugins": {},
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }

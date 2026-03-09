@@ -8,7 +8,29 @@
       "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo build:*)",
       "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo check:*)",
       "Bash(PATH=\"/Users/pershing/.rustup/toolchains/stable-x86_64-apple-darwin/bin:$PATH\" cargo test:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git status:*)",
+      "Bash(npm run build:*)",
+      "Bash(curl:*)",
+      "Bash(node /Users/pershing/.claude/hooks/session-start.js:*)",
+      "Bash(echo:*)",
+      "Bash(node /Users/pershing/.claude/hooks/pre-compact.js:*)",
+      "Bash(node:*)",
+      "Bash(python3:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(npm install:*)",
+      "Bash(uipro init:*)",
+      "WebFetch(domain:stingtao.info)",
+      "Bash(cargo check:*)",
+      "Bash(~/.cargo/bin/cargo check:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:prompts.stingtao.info)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(grep:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)"
     ]
   }
 }
