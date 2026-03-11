@@ -321,3 +321,13 @@ pub(crate) fn ensure_structure(central_home: &Path) -> std::io::Result<()> {
     fs::create_dir_all(central_home.join("prompts").join("templates"))?;
     Ok(())
 }
+
+/// Resolve and validate central home path; ensure directory structure exists.
+pub(crate) fn normalized_home(input: &str) -> Result<PathBuf, String> {
+    if input.trim().is_empty() {
+        return Err("Central Home path is required".to_string());
+    }
+    let home = detect_central_home_path(&crate::util::absolute_path(Path::new(input.trim())));
+    ensure_structure(&home).map_err(|e| e.to_string())?;
+    Ok(home)
+}

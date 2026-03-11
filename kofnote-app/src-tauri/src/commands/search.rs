@@ -1,20 +1,29 @@
+use crate::commands::core::{count_records_in_memory, search_records_in_memory};
 use crate::storage::index::{
-    load_all_memory_items, resolve_workspace_from_central_home, search_memory_in_index,
-    search_records_in_index,
+    index_db_path, load_all_memory_items, rebuild_index, resolve_workspace_from_central_home,
+    search_memory_in_index, search_records_in_index,
 };
-use crate::storage::records::load_records;
+use crate::storage::records::{load_records, normalized_home};
 use crate::types::{
-    normalized_home, RebuildIndexResult, Record, SearchResult, TimelineGroup, TimelineResponse,
+    RebuildIndexResult, Record, SearchResult, TimelineGroup, TimelineResponse,
     UnifiedMemoryItem, UnifiedSearchResult,
 };
+use crate::util::{normalize_record_type, sanitize_date_filter};
 use std::collections::HashMap;
 use std::time::Instant;
 use chrono::Datelike;
 
-
 #[tauri::command]
 pub fn rebuild_search_index(central_home: String) -> Result<RebuildIndexResult, String> {
-    crate::types::rebuild_search_index(central_home)
+    let started = Instant::now();
+    let home = normalized_home(&central_home)?;
+    let records = load_records(&home)?;
+    let indexed_count = rebuild_index(&home, &records)?;
+    Ok(RebuildIndexResult {
+        indexed_count,
+        index_path: index_db_path(&home).to_string_lossy().to_string(),
+        took_ms: started.elapsed().as_millis(),
+    })
 }
 
 #[tauri::command]
@@ -27,15 +36,82 @@ pub fn search_records(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<SearchResult, String> {
-    crate::types::search_records(
-        central_home,
-        query,
-        record_type,
-        date_from,
-        date_to,
-        limit,
-        offset,
-    )
+    let started = Instant::now();
+    let home = normalized_home(&central_home)?;
+    let limit = limit.unwrap_or(200).clamp(1, 1000);
+    let offset = offset.unwrap_or(0);
+
+    let query_text = query.unwrap_or_default().trim().to_string();
+    let record_type = record_type
+        .map(|item| normalize_record_type(&item))
+        .filter(|item| !item.is_empty());
+    let date_from = sanitize_date_filter(date_from);
+    let date_to = sanitize_date_filter(date_to);
+    let use_index = !query_text.is_empty();
+
+    let (records, total, snippets, indexed) = if use_index {
+        if !index_db_path(&home).exists() {
+            let _ = rebuild_index(&home, &load_records(&home)?);
+        }
+        match search_records_in_index(
+            &home,
+            &query_text,
+            record_type.as_deref(),
+            date_from.as_deref(),
+            date_to.as_deref(),
+            limit,
+            offset,
+        ) {
+            Ok(result) => (result.0, result.1, result.2, true),
+            Err(_) => {
+                let all = load_records(&home)?;
+                let records = search_records_in_memory(
+                    &all,
+                    &query_text,
+                    record_type.as_deref(),
+                    date_from.as_deref(),
+                    date_to.as_deref(),
+                    limit,
+                    offset,
+                );
+                let total = count_records_in_memory(
+                    &all,
+                    &query_text,
+                    record_type.as_deref(),
+                    date_from.as_deref(),
+                    date_to.as_deref(),
+                );
+                (records, total, HashMap::new(), false)
+            }
+        }
+    } else {
+        let all = load_records(&home)?;
+        let filtered = search_records_in_memory(
+            &all,
+            "",
+            record_type.as_deref(),
+            date_from.as_deref(),
+            date_to.as_deref(),
+            limit,
+            offset,
+        );
+        let total = count_records_in_memory(
+            &all,
+            "",
+            record_type.as_deref(),
+            date_from.as_deref(),
+            date_to.as_deref(),
+        );
+        (filtered, total, HashMap::new(), false)
+    };
+
+    Ok(SearchResult {
+        records,
+        total,
+        indexed,
+        took_ms: started.elapsed().as_millis(),
+        snippets,
+    })
 }
 
 // --- Second Brain P0: Unified Search + Timeline ---

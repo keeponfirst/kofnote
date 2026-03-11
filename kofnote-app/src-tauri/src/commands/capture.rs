@@ -199,7 +199,7 @@ pub fn quick_capture(
     ensure_structure(&home).map_err(|e| e.to_string())?;
 
     // Step 1: Immediately save as provisional note via upsert_record
-    let json_path = crate::types::upsert_record(
+    let json_path = crate::commands::core::upsert_record(
         central_home.clone(),
         serde_json::from_value(json!({
             "recordType": "note",
