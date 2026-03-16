@@ -7,6 +7,29 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Sanitize FTS5 snippet HTML to prevent XSS attacks.
+/// Preserves FTS5's <mark></mark> tags but escapes all other HTML.
+fn sanitize_snippet_html(raw: &str) -> String {
+    const MARK_OPEN_PLACEHOLDER: &str = "\x00MARK_OPEN\x00";
+    const MARK_CLOSE_PLACEHOLDER: &str = "\x00MARK_CLOSE\x00";
+
+    // Replace <mark> with placeholder to preserve highlighting
+    let step1 = raw.replace("<mark>", MARK_OPEN_PLACEHOLDER);
+    let step2 = step1.replace("</mark>", MARK_CLOSE_PLACEHOLDER);
+
+    // HTML escape all remaining content
+    let escaped = step2
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+
+    // Restore <mark> tags
+    escaped
+        .replace(MARK_OPEN_PLACEHOLDER, "<mark>")
+        .replace(MARK_CLOSE_PLACEHOLDER, "</mark>")
+}
+
 pub(crate) fn open_index_connection(central_home: &Path) -> Result<Connection, String> {
     let path = index_db_path(central_home);
     if let Some(parent) = path.parent() {
@@ -274,7 +297,8 @@ pub(crate) fn search_records_in_index(
         let (record, snippet) = row.map_err(|error| error.to_string())?;
         if let Some(json_path) = &record.json_path {
             if !snippet.trim().is_empty() {
-                snippets.insert(json_path.clone(), snippet);
+                let sanitized = sanitize_snippet_html(&snippet);
+                snippets.insert(json_path.clone(), sanitized);
             }
         }
         records.push(record);

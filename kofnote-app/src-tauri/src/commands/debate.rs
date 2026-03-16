@@ -13,6 +13,12 @@ use crate::types::{
     DebateRunSummary, DebateState, DebateTrace, DebateTurn, Record, RecordPayload,
 };
 use crate::util::{file_mtime_iso, normalize_record_type, write_atomic};
+use crate::providers::openai::resolve_api_key as resolve_openai_api_key;
+use crate::providers::gemini::resolve_gemini_api_key;
+use crate::providers::claude::resolve_claude_api_key;
+use crate::providers::openai::run_openai_text_completion;
+use crate::providers::gemini::run_gemini_text_completion;
+use crate::providers::claude::run_claude_text_completion;
 use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -30,24 +36,16 @@ pub async fn run_debate_mode(
     central_home: String,
     request: DebateModeRequest,
 ) -> Result<DebateModeResponse, String> {
-    // Check lock
-    {
-        let guard = lock
-            .0
-            .lock()
-            .map_err(|error| format!("Lock poisoned: {error}"))?;
+    // Atomic check-and-set in a single lock scope
+    let current_run_id = {
+        let mut guard = lock.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(run_id) = guard.as_ref() {
             return Err(format!("Another debate is already running: {run_id}"));
         }
-    }
-    // Set lock
-    {
-        let mut guard = lock
-            .0
-            .lock()
-            .map_err(|error| format!("Lock poisoned: {error}"))?;
-        *guard = Some(generate_debate_run_id());
-    }
+        let run_id = generate_debate_run_id();
+        *guard = Some(run_id.clone());
+        run_id
+    };
 
     let home = normalized_home(&central_home)?;
     let app_for_worker = app.clone();
@@ -58,8 +56,14 @@ pub async fn run_debate_mode(
     .map_err(|error| format!("Debate worker join error: {error}"));
 
     // ALWAYS clear lock, even on error.
-    if let Ok(mut guard) = lock.0.lock() {
-        *guard = None;
+    match lock.0.lock() {
+        Ok(mut guard) => {
+            *guard = None;
+        }
+        Err(e) => {
+            let mut guard = e.into_inner();
+            *guard = None;
+        }
     }
 
     // Flatten: Result<Result<T, E>, E> -> Result<T, E>
@@ -168,6 +172,10 @@ fn run_debate_mode_internal_with_app(
     let normalized = normalize_debate_request(request, &provider_registry)?;
     ensure_structure(central_home).map_err(|error| error.to_string())?;
 
+    let openai_key = resolve_openai_api_key(None).ok();
+    let gemini_key = resolve_gemini_api_key(None).ok();
+    let claude_key = resolve_claude_api_key(None).ok();
+
     let run_id = generate_debate_run_id();
     let run_root = central_home.join("records").join("debates").join(&run_id);
     let rounds_root = run_root.join("rounds");
@@ -249,6 +257,9 @@ fn run_debate_mode_internal_with_app(
                 &rounds,
                 normalized.max_turn_seconds,
                 normalized.max_turn_tokens,
+                openai_key.clone(),
+                gemini_key.clone(),
+                claude_key.clone(),
             );
             if let Some(app_handle) = app.as_ref() {
                 let _ = app_handle.emit(
@@ -724,6 +735,9 @@ fn execute_debate_turn(
     previous_rounds: &[DebateRoundArtifact],
     max_turn_seconds: u64,
     max_turn_tokens: u32,
+    openai_key: Option<String>,
+    gemini_key: Option<String>,
+    claude_key: Option<String>,
 ) -> DebateTurn {
     let started_at = Local::now().to_rfc3339();
     let timer = Instant::now();
@@ -746,6 +760,9 @@ fn execute_debate_turn(
             &prompt,
             max_turn_seconds,
             max_turn_tokens,
+            openai_key,
+            gemini_key,
+            claude_key,
         )
     };
 
@@ -877,6 +894,9 @@ fn run_debate_provider_text(
     prompt: &str,
     max_turn_seconds: u64,
     max_turn_tokens: u32,
+    openai_key: Option<String>,
+    gemini_key: Option<String>,
+    claude_key: Option<String>,
 ) -> Result<String, String> {
     match provider {
         "codex-cli" => crate::providers::cli::run_codex_cli_completion(
@@ -900,25 +920,28 @@ fn run_debate_provider_text(
             max_turn_tokens,
         )
             .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_CLAUDE_CLI", &error)),
-        "openai" => crate::providers::openai::run_openai_text_completion(
+        "openai" => run_openai_text_completion(
             model,
             prompt,
             max_turn_seconds,
             max_turn_tokens,
+            openai_key,
         )
         .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_OPENAI", &error)),
-        "gemini" => crate::providers::gemini::run_gemini_text_completion(
+        "gemini" => run_gemini_text_completion(
             model,
             prompt,
             max_turn_seconds,
             max_turn_tokens,
+            gemini_key,
         )
         .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_GEMINI", &error)),
-        "claude" => crate::providers::claude::run_claude_text_completion(
+        "claude" => run_claude_text_completion(
             model,
             prompt,
             max_turn_seconds,
             max_turn_tokens,
+            claude_key,
         )
         .map_err(|error| debate_error("DEBATE_ERR_PROVIDER_CLAUDE", &error)),
         "local" => Ok(prompt.to_string()),
