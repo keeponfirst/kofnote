@@ -77,6 +77,10 @@ fn main() {
             commands::prompt_service::delete_prompt_template,
             commands::prompt_service::run_prompt_service,
             commands::capture::quick_capture,
+            commands::supabase::supabase_sign_in,
+            commands::supabase::supabase_sign_out,
+            commands::supabase::supabase_auth_status,
+            commands::supabase::supabase_full_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

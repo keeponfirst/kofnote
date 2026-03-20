@@ -10,3 +10,4 @@ pub mod notebooklm;
 pub mod prompt_service;
 pub mod search;
 pub mod settings;
+pub mod supabase;

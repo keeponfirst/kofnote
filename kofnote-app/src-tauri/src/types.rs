@@ -44,8 +44,8 @@ pub(crate) const CODEX_MODEL_FALLBACKS: [&str; 3] = ["gpt-5-codex", "o3", "o4-mi
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedHome {
-    central_home: String,
-    corrected: bool,
+    pub(crate) central_home: String,
+    pub(crate) corrected: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -104,44 +104,44 @@ pub struct LogEntry {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagCount {
-    tag: String,
-    count: usize,
+    pub(crate) tag: String,
+    pub(crate) count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DailyCount {
-    date: String,
-    count: usize,
+    pub(crate) date: String,
+    pub(crate) count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardStats {
-    total_records: usize,
-    total_logs: usize,
-    type_counts: HashMap<String, usize>,
-    top_tags: Vec<TagCount>,
-    recent_daily_counts: Vec<DailyCount>,
-    pending_sync_count: usize,
+    pub(crate) total_records: usize,
+    pub(crate) total_logs: usize,
+    pub(crate) type_counts: HashMap<String, usize>,
+    pub(crate) top_tags: Vec<TagCount>,
+    pub(crate) recent_daily_counts: Vec<DailyCount>,
+    pub(crate) pending_sync_count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
-    records: Vec<Record>,
-    total: usize,
-    indexed: bool,
-    took_ms: u128,
-    snippets: HashMap<String, String>,
+    pub(crate) records: Vec<Record>,
+    pub(crate) total: usize,
+    pub(crate) indexed: bool,
+    pub(crate) took_ms: u128,
+    pub(crate) snippets: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebuildIndexResult {
-    indexed_count: usize,
-    index_path: String,
-    took_ms: u128,
+    pub(crate) indexed_count: usize,
+    pub(crate) index_path: String,
+    pub(crate) took_ms: u128,
 }
 
 // --- Second Brain P0: Unified Memory ---
@@ -191,28 +191,28 @@ pub struct TimelineResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiAnalysisResponse {
-    provider: String,
-    model: String,
-    content: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfile {
-    id: String,
-    name: String,
-    central_home: String,
-    default_provider: String,
-    default_model: String,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) central_home: String,
+    pub(crate) default_provider: String,
+    pub(crate) default_model: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct NotionSettings {
     #[serde(default)]
-    enabled: bool,
+    pub(crate) enabled: bool,
     #[serde(default)]
-    database_id: String,
+    pub(crate) database_id: String,
 }
 
 impl Default for NotionSettings {
@@ -228,11 +228,11 @@ impl Default for NotionSettings {
 #[serde(rename_all = "camelCase")]
 pub struct NotebookLmSettings {
     #[serde(default = "default_notebooklm_command")]
-    command: String,
+    pub(crate) command: String,
     #[serde(default = "default_notebooklm_args")]
-    args: Vec<String>,
+    pub(crate) args: Vec<String>,
     #[serde(default)]
-    default_notebook_id: Option<String>,
+    pub(crate) default_notebook_id: Option<String>,
 }
 
 impl Default for NotebookLmSettings {
@@ -247,11 +247,37 @@ impl Default for NotebookLmSettings {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct SupabaseSettings {
+    /// Supabase project URL — safe to store in settings (not a secret).
+    #[serde(default)]
+    pub(crate) url: String,
+    /// Supabase anon key — safe to store in settings (RLS enforced).
+    #[serde(default)]
+    pub(crate) anon_key: String,
+    /// ISO8601 timestamp of last successful pull from Supabase.
+    #[serde(default)]
+    pub(crate) last_sync_at: String,
+}
+
+impl Default for SupabaseSettings {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            anon_key: String::new(),
+            last_sync_at: String::from("1970-01-01T00:00:00Z"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct IntegrationsSettings {
     #[serde(default)]
-    notion: NotionSettings,
+    pub(crate) notion: NotionSettings,
     #[serde(default)]
-    notebooklm: NotebookLmSettings,
+    pub(crate) notebooklm: NotebookLmSettings,
+    #[serde(default)]
+    pub(crate) supabase: SupabaseSettings,
 }
 
 impl Default for IntegrationsSettings {
@@ -259,6 +285,7 @@ impl Default for IntegrationsSettings {
         Self {
             notion: NotionSettings::default(),
             notebooklm: NotebookLmSettings::default(),
+            supabase: SupabaseSettings::default(),
         }
     }
 }
@@ -266,20 +293,20 @@ impl Default for IntegrationsSettings {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DebateProviderConfig {
-    id: String,
+    pub(crate) id: String,
     #[serde(rename = "type")]
-    provider_type: String,
+    pub(crate) provider_type: String,
     #[serde(default = "default_enabled_true")]
-    enabled: bool,
+    pub(crate) enabled: bool,
     #[serde(default)]
-    capabilities: Vec<String>,
+    pub(crate) capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRegistrySettings {
     #[serde(default = "default_debate_provider_configs")]
-    providers: Vec<DebateProviderConfig>,
+    pub(crate) providers: Vec<DebateProviderConfig>,
 }
 
 impl Default for ProviderRegistrySettings {
@@ -294,17 +321,17 @@ impl Default for ProviderRegistrySettings {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
-    profiles: Vec<WorkspaceProfile>,
+    pub(crate) profiles: Vec<WorkspaceProfile>,
     #[serde(default)]
-    active_profile_id: Option<String>,
+    pub(crate) active_profile_id: Option<String>,
     #[serde(default = "default_poll_interval")]
-    poll_interval_sec: u64,
+    pub(crate) poll_interval_sec: u64,
     #[serde(default)]
-    ui_preferences: Value,
+    pub(crate) ui_preferences: Value,
     #[serde(default)]
-    integrations: IntegrationsSettings,
+    pub(crate) integrations: IntegrationsSettings,
     #[serde(default)]
-    provider_registry: ProviderRegistrySettings,
+    pub(crate) provider_registry: ProviderRegistrySettings,
 }
 
 impl Default for AppSettings {
@@ -404,35 +431,35 @@ fn default_notebooklm_args() -> Vec<String> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportReportResult {
-    output_path: String,
-    title: String,
+    pub(crate) output_path: String,
+    pub(crate) title: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthDiagnostics {
-    central_home: String,
-    records_count: usize,
-    logs_count: usize,
-    index_path: String,
-    index_exists: bool,
-    indexed_records: usize,
-    latest_record_at: String,
-    latest_log_at: String,
-    has_openai_api_key: bool,
-    has_gemini_api_key: bool,
-    has_claude_api_key: bool,
-    profile_count: usize,
+    pub(crate) central_home: String,
+    pub(crate) records_count: usize,
+    pub(crate) logs_count: usize,
+    pub(crate) index_path: String,
+    pub(crate) index_exists: bool,
+    pub(crate) indexed_records: usize,
+    pub(crate) latest_record_at: String,
+    pub(crate) latest_log_at: String,
+    pub(crate) has_openai_api_key: bool,
+    pub(crate) has_gemini_api_key: bool,
+    pub(crate) has_claude_api_key: bool,
+    pub(crate) profile_count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeFingerprint {
-    token: String,
-    records_count: usize,
-    logs_count: usize,
-    latest_record_at: String,
-    latest_log_at: String,
+    pub(crate) token: String,
+    pub(crate) records_count: usize,
+    pub(crate) logs_count: usize,
+    pub(crate) latest_record_at: String,
+    pub(crate) latest_log_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -481,46 +508,46 @@ pub struct NotionUpsertInfo {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotebookLmConfig {
-    command: Option<String>,
-    args: Option<Vec<String>>,
+    pub(crate) command: Option<String>,
+    pub(crate) args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotebookSummary {
-    id: String,
-    name: String,
-    source_count: Option<usize>,
-    updated_at: Option<String>,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) source_count: Option<usize>,
+    pub(crate) updated_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotebookLmAskResult {
-    answer: String,
-    citations: Vec<String>,
+    pub(crate) answer: String,
+    pub(crate) citations: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DebateParticipantConfig {
-    role: Option<String>,
-    model_provider: Option<String>,
-    model_name: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) model_provider: Option<String>,
+    pub(crate) model_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DebateModeRequest {
-    problem: String,
+    pub(crate) problem: String,
     #[serde(default)]
-    constraints: Vec<String>,
-    output_type: String,
+    pub(crate) constraints: Vec<String>,
+    pub(crate) output_type: String,
     #[serde(default)]
-    participants: Vec<DebateParticipantConfig>,
-    max_turn_seconds: Option<u64>,
-    max_turn_tokens: Option<u32>,
-    writeback_record_type: Option<String>,
+    pub(crate) participants: Vec<DebateParticipantConfig>,
+    pub(crate) max_turn_seconds: Option<u64>,
+    pub(crate) max_turn_tokens: Option<u32>,
+    pub(crate) writeback_record_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
