@@ -576,7 +576,13 @@ function App() {
               return
             }
             pushNotice('info', t('capture.toast.captured'))
-            await quickCapture({ centralHome, content })
+            
+            // Get current active profile's default provider and model directly from state
+            const currentProfile = appSettings.profiles.find((p) => p.id === appSettings.activeProfileId)
+            const provider = currentProfile?.defaultProvider || 'local'
+            const model = currentProfile?.defaultModel || ''
+            
+            await quickCapture({ centralHome, content, provider, model })
           } catch (err) {
             pushNotice('error', String(err))
           }

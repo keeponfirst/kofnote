@@ -72,20 +72,74 @@ fn build_prompt(content: &str, source_hint: &Option<String>) -> String {
     )
 }
 
-fn call_ai(content: &str, source_hint: &Option<String>) -> Result<String, String> {
+fn call_ai(
+    content: &str,
+    source_hint: &Option<String>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    openai_key: Option<String>,
+    gemini_key: Option<String>,
+    claude_key: Option<String>,
+) -> Result<String, String> {
     let prompt = build_prompt(content, source_hint);
     let max_seconds = 60;
     let max_tokens = 1024;
 
-    // Priority: Claude → OpenAI → Gemini
-    if resolve_claude_api_key(None).is_ok() {
-        return run_claude_text_completion("claude-sonnet-4-6", &prompt, max_seconds, max_tokens);
+    // If an explicit provider is requested
+    if let Some(p) = provider {
+        let m = model.unwrap_or("");
+        match p {
+            "codex-cli" => {
+                return crate::providers::cli::run_codex_cli_completion(
+                    m,
+                    &prompt,
+                    max_seconds,
+                    max_tokens,
+                );
+            }
+            "gemini-cli" => {
+                return crate::providers::cli::run_gemini_cli_completion(
+                    m,
+                    &prompt,
+                    max_seconds,
+                    max_tokens,
+                );
+            }
+            "claude-cli" => {
+                return crate::providers::cli::run_claude_cli_completion(
+                    m,
+                    &prompt,
+                    max_seconds,
+                    max_tokens,
+                );
+            }
+            "openai" | "openai-api" => {
+                let actual_model = if m.is_empty() { "gpt-4o-mini" } else { m };
+                return run_openai_text_completion(actual_model, &prompt, max_seconds, max_tokens, openai_key);
+            }
+            "gemini" | "gemini-api" => {
+                let actual_model = if m.is_empty() { "gemini-2.0-flash" } else { m };
+                return run_gemini_text_completion(actual_model, &prompt, max_seconds, max_tokens, gemini_key);
+            }
+            "claude" | "claude-api" => {
+                let actual_model = if m.is_empty() { "claude-sonnet-4-6" } else { m };
+                return run_claude_text_completion(actual_model, &prompt, max_seconds, max_tokens, claude_key);
+            }
+            _ => {
+                // Fallthrough to default behavior if unknown provider
+            }
+        }
     }
-    if resolve_openai_api_key(None).is_ok() {
-        return run_openai_text_completion("gpt-4o-mini", &prompt, max_seconds, max_tokens);
+
+    // Default fallback priority: Claude → OpenAI → Gemini
+    if let Some(key) = claude_key {
+        return run_claude_text_completion("claude-sonnet-4-6", &prompt, max_seconds, max_tokens, Some(key));
     }
-    if resolve_gemini_api_key(None).is_ok() {
-        return run_gemini_text_completion("gemini-2.0-flash", &prompt, max_seconds, max_tokens);
+    if let Some(key) = openai_key {
+        return run_openai_text_completion("gpt-4o-mini", &prompt, max_seconds, max_tokens, Some(key));
+    }
+    if let Some(key) = gemini_key {
+        return run_gemini_text_completion("gemini-2.0-flash", &prompt, max_seconds, max_tokens, Some(key));
     }
     Err("NO_AI_KEY".to_string())
 }
@@ -190,6 +244,8 @@ pub fn quick_capture(
     central_home: String,
     content: String,
     source_hint: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
 ) -> Result<String, String> {
     if content.trim().is_empty() {
         return Err("Content is empty".to_string());
@@ -215,16 +271,60 @@ pub fn quick_capture(
     .clone()
     .unwrap_or_default();
 
+    // Resolve API keys on the main thread (macOS Keychain access might fail in background threads without prompt)
+    let claude_key = resolve_claude_api_key(None).ok();
+    let openai_key = resolve_openai_api_key(None).ok();
+    let gemini_key = resolve_gemini_api_key(None).ok();
+
     // Step 2: Background thread for AI analysis
     let json_path_clone = json_path.clone();
     let home_clone = home.clone();
     std::thread::spawn(move || {
-        match call_ai(&content, &source_hint) {
-            Ok(raw_response) => match parse_ai_response(&raw_response) {
-                Ok(analysis) => {
-                    if let Err(e) =
-                        update_record_on_disk(&home_clone, &json_path_clone, &analysis)
-                    {
+        println!("[QuickCapture] Starting AI analysis...");
+        
+        // Capture explicitly requested provider handling OR fallbacks
+        let ai_result = call_ai(
+            &content,
+            &source_hint,
+            provider.as_deref(),
+            model.as_deref(),
+            openai_key,
+            gemini_key,
+            claude_key,
+        );
+
+        match ai_result {
+            Ok(raw_response) => {
+                println!("[QuickCapture] Raw AI response:\n{}", raw_response);
+                match parse_ai_response(&raw_response) {
+                    Ok(analysis) => {
+                        println!("[QuickCapture] Parsed successfully: {:?}", analysis.title);
+                        if let Err(e) =
+                            update_record_on_disk(&home_clone, &json_path_clone, &analysis)
+                        {
+                            println!("[QuickCapture] Disk update failed: {}", e);
+                            let _ = app.emit(
+                                "capture_failed",
+                                CaptureFailedPayload {
+                                    json_path: json_path_clone,
+                                    error: e,
+                                },
+                            );
+                            return;
+                        }
+                        println!("[QuickCapture] Emit capture_complete");
+                        let _ = app.emit(
+                            "capture_complete",
+                            CaptureCompletePayload {
+                                json_path: json_path_clone,
+                                record_type: analysis.record_type,
+                                title: analysis.title,
+                                tags: analysis.tags,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        println!("[QuickCapture] Parse error: {}", e);
                         let _ = app.emit(
                             "capture_failed",
                             CaptureFailedPayload {
@@ -232,29 +332,11 @@ pub fn quick_capture(
                                 error: e,
                             },
                         );
-                        return;
                     }
-                    let _ = app.emit(
-                        "capture_complete",
-                        CaptureCompletePayload {
-                            json_path: json_path_clone,
-                            record_type: analysis.record_type,
-                            title: analysis.title,
-                            tags: analysis.tags,
-                        },
-                    );
                 }
-                Err(e) => {
-                    let _ = app.emit(
-                        "capture_failed",
-                        CaptureFailedPayload {
-                            json_path: json_path_clone,
-                            error: e,
-                        },
-                    );
-                }
-            },
+            }
             Err(e) if e == "NO_AI_KEY" => {
+                println!("[QuickCapture] Error: NO_AI_KEY");
                 // No AI key available — keep note as-is, notify frontend
                 let _ = app.emit(
                     "capture_failed",

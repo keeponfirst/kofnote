@@ -27,8 +27,9 @@ pub(crate) fn run_gemini_text_completion(
     prompt: &str,
     max_turn_seconds: u64,
     max_turn_tokens: u32,
+    api_key_opt: Option<String>,
 ) -> Result<String, String> {
-    let api_key = resolve_gemini_api_key(None)?;
+    let api_key = resolve_gemini_api_key(api_key_opt)?;
     let url = format!("{GEMINI_API_BASE_URL}/{model}:generateContent?key={api_key}");
     let payload = json!({
         "contents": [{

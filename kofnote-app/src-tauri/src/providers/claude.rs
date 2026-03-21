@@ -27,8 +27,9 @@ pub(crate) fn run_claude_text_completion(
     prompt: &str,
     max_turn_seconds: u64,
     max_turn_tokens: u32,
+    api_key_opt: Option<String>,
 ) -> Result<String, String> {
-    let api_key = resolve_claude_api_key(None)?;
+    let api_key = resolve_claude_api_key(api_key_opt)?;
     let payload = json!({
         "model": model,
         "max_tokens": max_turn_tokens,

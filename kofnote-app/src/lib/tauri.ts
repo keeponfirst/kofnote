@@ -341,10 +341,10 @@ function createMockDebateResponse(request: DebateModeRequest, centralHome: strin
     request.participants && request.participants.length > 0
       ? request.participants
       : ['Proponent', 'Critic', 'Analyst', 'Synthesizer', 'Judge'].map((role) => ({
-          role,
-          modelProvider: 'local',
-          modelName: 'local-heuristic-v1',
-        }))
+        role,
+        modelProvider: 'local',
+        modelName: 'local-heuristic-v1',
+      }))
 
   const response: DebateModeResponse = {
     runId,
@@ -577,47 +577,47 @@ async function mockInvoke<T>(command: string, args: Record<string, unknown> = {}
       const hit = mockState.debateRuns[runId]
       const response: DebateReplayResponse = hit
         ? {
-            runId: hit.runId,
-            request: {
-              problem: hit.finalPacket.problem,
-              constraints: hit.finalPacket.constraints,
-              outputType: hit.finalPacket.outputType,
-            },
-            rounds: [
-              { round: 'round-1', turns: [] },
-              { round: 'round-2', turns: [] },
-              { round: 'round-3', turns: [] },
-            ],
-            consensus: hit.finalPacket.consensus as unknown as Record<string, unknown>,
-            finalPacket: hit.finalPacket,
-            writebackRecord: hit.writebackJsonPath
-              ? mockState.records.find((item) => item.jsonPath === hit.writebackJsonPath) ?? null
-              : null,
-            consistency: {
-              filesComplete: true,
-              sqlIndexed: true,
-              issues: [],
-            },
-          }
+          runId: hit.runId,
+          request: {
+            problem: hit.finalPacket.problem,
+            constraints: hit.finalPacket.constraints,
+            outputType: hit.finalPacket.outputType,
+          },
+          rounds: [
+            { round: 'round-1', turns: [] },
+            { round: 'round-2', turns: [] },
+            { round: 'round-3', turns: [] },
+          ],
+          consensus: hit.finalPacket.consensus as unknown as Record<string, unknown>,
+          finalPacket: hit.finalPacket,
+          writebackRecord: hit.writebackJsonPath
+            ? mockState.records.find((item) => item.jsonPath === hit.writebackJsonPath) ?? null
+            : null,
+          consistency: {
+            filesComplete: true,
+            sqlIndexed: true,
+            issues: [],
+          },
+        }
         : {
-            runId,
-            request: {},
-            rounds: [],
-            consensus: {},
-            finalPacket: createMockDebateResponse(
-              {
-                problem: 'Unknown run',
-                outputType: 'decision',
-              },
-              mockState.centralHome,
-            ).finalPacket,
-            writebackRecord: null,
-            consistency: {
-              filesComplete: false,
-              sqlIndexed: false,
-              issues: [`Missing run in mock runtime: ${runId}`],
+          runId,
+          request: {},
+          rounds: [],
+          consensus: {},
+          finalPacket: createMockDebateResponse(
+            {
+              problem: 'Unknown run',
+              outputType: 'decision',
             },
-      }
+            mockState.centralHome,
+          ).finalPacket,
+          writebackRecord: null,
+          consistency: {
+            filesComplete: false,
+            sqlIndexed: false,
+            issues: [`Missing run in mock runtime: ${runId}`],
+          },
+        }
       return clone(response) as T
     }
     case 'list_debate_runs': {
@@ -1166,6 +1166,8 @@ export async function quickCapture(args: {
   centralHome: string
   content: string
   sourceHint?: string
+  provider?: string
+  model?: string
 }): Promise<string> {
   return invokeCommand<string>('quick_capture', args)
 }

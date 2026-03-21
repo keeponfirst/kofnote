@@ -151,6 +151,7 @@ fn run_openai_analysis(
 fn run_gemini_analysis(
     model: &str,
     prompt: &str,
+    api_key: Option<String>,
     records: &[Record],
     logs: &[LogEntry],
     include_logs: bool,
@@ -171,12 +172,13 @@ fn run_gemini_analysis(
     } else {
         model.trim()
     };
-    crate::providers::gemini::run_gemini_text_completion(model, &merged, 60, 4096)
+    crate::providers::gemini::run_gemini_text_completion(model, &merged, 60, 4096, api_key)
 }
 
 fn run_claude_analysis(
     model: &str,
     prompt: &str,
+    api_key: Option<String>,
     records: &[Record],
     logs: &[LogEntry],
     include_logs: bool,
@@ -197,7 +199,7 @@ fn run_claude_analysis(
     } else {
         model.trim()
     };
-    crate::providers::claude::run_claude_text_completion(model, &merged, 60, 4096)
+    crate::providers::claude::run_claude_text_completion(model, &merged, 60, 4096, api_key)
 }
 
 #[tauri::command]
@@ -223,8 +225,8 @@ pub fn run_ai_analysis(
 
     let content = match provider.as_str() {
         "openai" => run_openai_analysis(&model, &prompt, api_key, &records, &logs, include_logs, max_records)?,
-        "gemini" => run_gemini_analysis(&model, &prompt, &records, &logs, include_logs, max_records)?,
-        "claude" => run_claude_analysis(&model, &prompt, &records, &logs, include_logs, max_records)?,
+        "gemini" => run_gemini_analysis(&model, &prompt, api_key, &records, &logs, include_logs, max_records)?,
+        "claude" => run_claude_analysis(&model, &prompt, api_key, &records, &logs, include_logs, max_records)?,
         "local" => run_local_analysis(&prompt, &records, &logs),
         _ => return Err(format!("Unsupported provider: {provider}")),
     };

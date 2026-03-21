@@ -106,70 +106,45 @@ Central Home 目錄結構（與 `keeponfirst-local-brain` 相容）：
 
 ## OpenSpec Workflow
 
-本專案使用 OpenSpec 作為 SSOT（Single Source of Truth）規格管理。規格檔案位於 `openspec/` 目錄。
+本專案使用 OpenSpec 管理規格，規格檔案位於 `openspec/` 目錄。
 
-### `/opsx:*` Slash Commands
+### 何時使用 OpenSpec？
+
+| 情境 | 做法 |
+|------|------|
+| **小改動**（bug fix、1-2 檔案、明確修改） | **直接做**，不需要走 OpenSpec |
+| **中型改動**（跨 3+ 檔案、需要設計決策） | 用 `/opsx:ff` 快速建立 change |
+| **大功能**（新模組、架構變更、多天工作） | 走完整 `/opsx:new` 流程 |
+
+### Claude 自動化行為
+
+Claude 應主動判斷是否使用 OpenSpec，不需要使用者手動下 `/opsx:*` 指令：
+- 若 `openspec/changes/` 下已有相關 change → 自動讀取 specs/design/tasks 並按計畫實作
+- 若使用者描述的任務屬於「大功能」→ 建議建立 OpenSpec change
+- 若屬於「小改動」→ 直接實作，不走 OpenSpec
+
+### `/opsx:*` 命令參考（使用者也可手動觸發）
 
 | 命令 | 用途 |
 |------|------|
-| `/opsx:new` | 建立新 change（proposal → specs → design → tasks） |
-| `/opsx:explore` | 探索現有 specs 和 changes |
-| `/opsx:apply` | 根據 change 的 tasks 執行實作 |
-| `/opsx:verify` | 驗證 change 實作是否符合 specs |
+| `/opsx:new` | 建立新 change（完整四步流程） |
+| `/opsx:ff` | Fast-forward：快速建立 change |
+| `/opsx:apply` | 按 tasks 實作 |
+| `/opsx:verify` | 驗證實作符合 specs |
 | `/opsx:archive` | 歸檔已完成的 change |
-| `/opsx:bulk-archive` | 批次歸檔多個已完成 changes |
+| `/opsx:explore` | 探索模式（思考夥伴） |
 | `/opsx:continue` | 繼續未完成的 change |
-| `/opsx:ff` | Fast-forward：快速推進簡單 change |
-| `/opsx:sync` | 同步 specs 與 changes 狀態 |
-| `/opsx:onboard` | 專案導覽與 OpenSpec 使用說明 |
+| `/opsx:sync` | 同步 specs |
+| `/opsx:bulk-archive` | 批次歸檔 |
+| `/opsx:onboard` | 新手教學 |
 
-### CLI 指令
+## Superpowers
 
-```bash
-openspec new change "<change-id>"          # 建立新 change
-openspec list                              # 列出所有 changes
-openspec instructions apply --change "<id>" # 產生實作指引
-```
-
-## Superpowers Skills
-
-本專案已整合 [Superpowers](https://github.com/obra/superpowers) 工程紀律技能庫（v4.3.1）。以下技能會在 session 啟動時自動載入，於適當情境觸發：
-
-| 技能 | 觸發時機 |
-|------|---------|
-| `using-superpowers` | Session 啟動時注入基礎行為 |
-| `writing-plans` | 規劃實作方案時 |
-| `executing-plans` | 按計畫逐步實作時 |
-| `test-driven-development` | 撰寫或修改測試時 |
-| `systematic-debugging` | 除錯時使用系統化方法 |
-| `requesting-code-review` | 提交 PR / 請求 review 時 |
-| `receiving-code-review` | 處理 review 回饋時 |
-| `verification-before-completion` | 標記任務完成前的驗證 |
-| `brainstorming` | 腦力激盪 / 方案探索時 |
-| `dispatching-parallel-agents` | 分派平行子任務時 |
-| `subagent-driven-development` | 使用 subagent 完成開發時 |
-| `finishing-a-development-branch` | 完成功能分支、準備合併時 |
-| `using-git-worktrees` | 使用 git worktree 隔離開發時 |
-| `writing-skills` | 撰寫新 skill 定義時 |
-
-## 推薦工作流
-
-OpenSpec 規範驅動 + Superpowers 工程紀律的整合流程：
-
-```
-1. /opsx:new "feature-name"     ← 建立 change，撰寫 proposal
-   ↓ Superpowers: writing-plans
-2. 撰寫 specs/ + design.md      ← 定義規格與設計
-   ↓ Superpowers: brainstorming
-3. 撰寫 tasks.md                ← 拆解可執行任務（每個 ≤2hr）
-   ↓ Superpowers: executing-plans
-4. /opsx:apply                   ← 按 tasks 逐步實作
-   ↓ Superpowers: test-driven-development, systematic-debugging
-5. /opsx:verify                  ← 驗證實作符合 specs
-   ↓ Superpowers: verification-before-completion
-6. /opsx:archive                 ← 歸檔已完成 change
-   ↓ Superpowers: finishing-a-development-branch
-```
+已整合 Superpowers 工程紀律技能庫。**全自動運作，不需要手動觸發。** 主要行為：
+- 實作前先規劃、拆解任務
+- 傾向 TDD（先測試再實作）
+- 完成前系統化驗證
+- 除錯時使用結構化方法而非亂猜
 
 ## Key Documentation
 

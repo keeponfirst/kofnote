@@ -173,13 +173,16 @@ pub fn run_prompt_service(central_home: String, request: PromptRunRequest) -> Re
         .map_err(|e| format!("Failed to parse template: {e}"))?;
 
     let resolved = resolve_prompt_content(&template.content, &profile, &request.variable_values);
+    let openai_key = crate::providers::openai::resolve_api_key(None).ok();
+    let gemini_key = crate::providers::gemini::resolve_gemini_api_key(None).ok();
+    let claude_key = crate::providers::claude::resolve_claude_api_key(None).ok();
 
     let provider = request.provider.unwrap_or_else(|| "local".to_string());
     let model = request.model.unwrap_or_default();
 
     let result = match provider.as_str() {
         "openai" => {
-            let api_key = crate::providers::openai::resolve_api_key(None)?;
+            let api_key = openai_key.ok_or_else(|| "Missing OpenAI API key. Set it in Settings first.".to_string())?;
             let model = if model.trim().is_empty() { "gpt-4.1-mini".to_string() } else { model.clone() };
             let payload = serde_json::json!({
                 "model": model,
@@ -197,11 +200,11 @@ pub fn run_prompt_service(central_home: String, request: PromptRunRequest) -> Re
         }
         "gemini" => {
             let model = if model.trim().is_empty() { "gemini-2.0-flash".to_string() } else { model.clone() };
-            crate::providers::gemini::run_gemini_text_completion(&model, &resolved, 60, 4096)?
+            crate::providers::gemini::run_gemini_text_completion(&model, &resolved, 60, 4096, gemini_key)?
         }
         "claude" => {
             let model = if model.trim().is_empty() { "claude-3-5-sonnet-latest".to_string() } else { model.clone() };
-            crate::providers::claude::run_claude_text_completion(&model, &resolved, 60, 4096)?
+            crate::providers::claude::run_claude_text_completion(&model, &resolved, 60, 4096, claude_key)?
         }
         _ => resolved.clone(),
     };

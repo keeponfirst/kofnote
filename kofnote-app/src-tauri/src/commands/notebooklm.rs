@@ -69,17 +69,17 @@ fn resolve_notebooklm_runtime(config: Option<NotebookLmConfig>) -> (String, Vec<
     let command = config
         .as_ref()
         .and_then(|c| c.command.as_ref())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .map(|s: &String| s.trim().to_string())
+        .filter(|s: &String| !s.is_empty())
         .or_else(|| if default_command.is_empty() { None } else { Some(default_command) })
         .unwrap_or_else(|| DEFAULT_NOTEBOOKLM_COMMAND.to_string());
 
     let args = config
         .and_then(|c| c.args)
-        .filter(|a| !a.is_empty())
+        .filter(|a: &Vec<String>| !a.is_empty())
         .unwrap_or_else(|| {
             if default_args.is_empty() {
-                DEFAULT_NOTEBOOKLM_ARGS.iter().map(String::from).collect()
+                DEFAULT_NOTEBOOKLM_ARGS.iter().map(|s| s.to_string()).collect()
             } else {
                 default_args
             }
