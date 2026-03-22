@@ -18,6 +18,9 @@ CORS_ORIGIN = "*"
 # SUPABASE_JWT_SECRET
 # GEMINI_API_KEY
 # ANTHROPIC_API_KEY
+# GATEWAY_BASE_URL          # e.g. https://kofnote-gateway.xxx.workers.dev（Notion OAuth callback 用）
+# NOTION_CLIENT_ID          # Phase 5 — Notion OAuth App
+# NOTION_CLIENT_SECRET      # Phase 5 — Notion OAuth App
 
 # ─── 路由（正式部署時設定）───
 # [env.production]
