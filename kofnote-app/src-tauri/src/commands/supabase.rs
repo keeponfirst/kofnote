@@ -196,9 +196,18 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
         return Err("請先在設定中填入 Supabase URL".to_string());
     }
 
-    let central_home = detect_central_home_path(&settings)
-        .ok_or("找不到 Central Home 目錄")?;
-    let central_home = normalized_home(central_home).ok_or("Central Home 路徑無效")?;
+    // Resolve central_home from active profile (or first profile)
+    let central_home_str = settings
+        .profiles
+        .iter()
+        .find(|p| Some(&p.id) == settings.active_profile_id.as_ref())
+        .or_else(|| settings.profiles.first())
+        .map(|p| p.central_home.clone())
+        .filter(|s| !s.is_empty())
+        .ok_or("找不到 Central Home，請先在設定中建立設定檔")?;
+    let central_home_pb =
+        normalized_home(&central_home_str).map_err(|e| e.to_string())?;
+    let central_home = central_home_pb.to_string_lossy().to_string();
 
     let mut pushed = 0usize;
     let mut failed = 0usize;
@@ -209,7 +218,7 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
         match push_record(&client, &url, &anon_key, &jwt, &user_id, record) {
             Ok(_) => pushed += 1,
             Err(e) => {
-                eprintln!("[Supabase] push failed for {}: {}", record.id, e);
+                eprintln!("[Supabase] push failed for {:?}: {}", record.json_path, e);
                 failed += 1;
             }
         }
@@ -231,6 +240,32 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
     Ok(SyncStats { pushed, pulled, failed })
 }
 
+/// Derive a stable UUID-shaped string from a local record path.
+/// Uses two DefaultHasher passes to produce 128 bits of hash and
+/// formats them as a lowercase UUID (no crypto dependency needed).
+fn path_to_uuid(local_id: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    local_id.hash(&mut h);
+    let hi = h.finish();
+    let mut h2 = DefaultHasher::new();
+    hi.hash(&mut h2);
+    "desktop_record".hash(&mut h2);
+    let lo = h2.finish();
+    let b = [
+        (hi >> 56) as u8, (hi >> 48) as u8, (hi >> 40) as u8, (hi >> 32) as u8,
+        (hi >> 24) as u8, (hi >> 16) as u8, (hi >> 8) as u8, hi as u8,
+        (lo >> 56) as u8, (lo >> 48) as u8, (lo >> 40) as u8, (lo >> 32) as u8,
+        (lo >> 24) as u8, (lo >> 16) as u8, (lo >> 8) as u8, lo as u8,
+    ];
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
 fn push_record(
     client: &Client,
     url: &str,
@@ -240,20 +275,26 @@ fn push_record(
     record: &crate::types::Record,
 ) -> Result<(), String> {
     let tags: Vec<String> = record.tags.clone();
+    // Use json_path (or title) as a stable local identifier for conflict resolution
+    let local_id = record
+        .json_path
+        .as_deref()
+        .unwrap_or(&record.title);
+    let record_uuid = path_to_uuid(local_id);
     let payload = json!({
-        "p_id": record.id,
+        "p_id": record_uuid,
         "p_user_id": user_id,
-        "p_local_id": record.id,
+        "p_local_id": local_id,
         "p_device_id": "desktop",
         "p_record_type": record.record_type,
         "p_title": record.title,
-        "p_source_text": record.content.as_deref().unwrap_or(""),
-        "p_final_body": record.content.as_deref().unwrap_or(""),
+        "p_source_text": record.source_text,
+        "p_final_body": record.final_body,
         "p_tags": tags,
-        "p_source_url": record.source_url,
+        "p_source_url": Value::Null,
         "p_source_platform": "desktop",
         "p_key_insight": Value::Null,
-        "p_date": record.created_at.get(..10),
+        "p_date": record.date.as_deref().or_else(|| record.created_at.get(..10)),
         "p_is_deleted": false,
         "p_updated_at": record.created_at,
     });
@@ -363,7 +404,7 @@ fn save_remote_record(row: &Value, central_home: &str) -> Result<(), String> {
     }
 
     // New record — create file
-    let filename = generate_filename(&title, &date, &record_type);
+    let filename = generate_filename(&record_type, &title);
     let path = std::path::PathBuf::from(&dir).join(&filename);
     let record_json = json!({
         "id": id,
