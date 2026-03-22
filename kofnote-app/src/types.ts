@@ -111,9 +111,16 @@ export type NotebookLmSettings = {
   defaultNotebookId?: string | null
 }
 
+export type SupabaseSettings = {
+  url: string
+  anonKey: string
+  lastSyncAt: string
+}
+
 export type IntegrationsSettings = {
   notion: NotionSettings
   notebooklm: NotebookLmSettings
+  supabase: SupabaseSettings
 }
 
 export type DebateProviderType = 'cli' | 'web'

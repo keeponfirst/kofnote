@@ -48,6 +48,10 @@ import {
   deletePromptTemplate,
   seedDefaultTemplates,
   getTimeline,
+  supabaseSignIn,
+  supabaseSignOut,
+  supabaseAuthStatus,
+  supabaseFullSync,
 } from '../lib/tauri'
 import { getLanguageLabel, isSupportedLanguage, SUPPORTED_LANGUAGES, translate, type UiLanguage } from '../i18n'
 import { buildProviderRegistrySettings } from '../lib/providerRegistry'
@@ -245,6 +249,11 @@ function App() {
         args: ['kof-notebooklm-mcp'],
         defaultNotebookId: null,
       },
+      supabase: {
+        url: '',
+        anonKey: '',
+        lastSyncAt: '1970-01-01T00:00:00Z',
+      },
     },
     providerRegistry: buildProviderRegistrySettings(),
   })
@@ -260,6 +269,12 @@ function App() {
   const [notionKeyDraft, setNotionKeyDraft] = useState('')
   const [hasNotionKey, setHasNotionKey] = useState(false)
   const [notionConflictStrategy, setNotionConflictStrategy] = useState<NotionConflictStrategy>('manual')
+  const [supabaseSignedIn, setSupabaseSignedIn] = useState(false)
+  const [supabaseEmail, setSupabaseEmail] = useState('')
+  const [supabaseLoginEmail, setSupabaseLoginEmail] = useState('')
+  const [supabaseLoginPassword, setSupabaseLoginPassword] = useState('')
+  const [supabaseSyncing, setSupabaseSyncing] = useState(false)
+  const [supabaseSyncResult, setSupabaseSyncResult] = useState<string | null>(null)
   const [notionSyncReport, setNotionSyncReport] = useState('')
 
   const [notebookList, setNotebookList] = useState<NotebookSummary[]>([])
@@ -483,15 +498,20 @@ function App() {
   }, [centralHome, centralHomeInput, loadCentralHome, pushNotice, t])
 
   const loadSettings = useCallback(async () => {
-    const [settings, hasOpenai, hasGemini, hasClaude, notionKey] = await Promise.all([
+    const [settings, hasOpenai, hasGemini, hasClaude, notionKey, sbStatus] = await Promise.all([
       getAppSettings(),
       hasOpenaiApiKey(),
       hasGeminiApiKey(),
       hasClaudeApiKey(),
       hasNotionApiKey(),
+      supabaseAuthStatus(),
     ])
     const normalizedSettings: AppSettings = {
       ...settings,
+      integrations: {
+        ...settings.integrations,
+        supabase: settings.integrations.supabase ?? { url: '', anonKey: '', lastSyncAt: '1970-01-01T00:00:00Z' },
+      },
       providerRegistry: buildProviderRegistrySettings(settings.providerRegistry),
     }
     setAppSettings(normalizedSettings)
@@ -499,6 +519,8 @@ function App() {
     setHasGeminiKey(hasGemini)
     setHasClaudeKey(hasClaude)
     setHasNotionKey(notionKey)
+    setSupabaseSignedIn(sbStatus.signed_in)
+    setSupabaseEmail(sbStatus.email)
     setSelectedNotebookId(normalizedSettings.integrations.notebooklm.defaultNotebookId ?? '')
 
     if (normalizedSettings.activeProfileId) {
@@ -2480,6 +2502,162 @@ function App() {
                 {t('Clear Key', '清除金鑰')}
               </button>
             </div>
+          </div>
+
+          <hr className="separator" />
+
+          <h3>{t('Supabase Cloud Sync', 'Supabase 雲端同步')}</h3>
+
+          <div className="panel panel-strong">
+            <h3>{t('Supabase Connection', 'Supabase 連線設定')}</h3>
+            <div className="form-grid two-col-grid">
+              <label>
+                {t('Supabase URL', 'Supabase URL')}
+                <input
+                  value={appSettings.integrations.supabase?.url ?? ''}
+                  onChange={(event) =>
+                    setAppSettings((prev) => ({
+                      ...prev,
+                      integrations: {
+                        ...prev.integrations,
+                        supabase: { ...prev.integrations.supabase, url: event.target.value },
+                      },
+                    }))
+                  }
+                  placeholder="https://xxx.supabase.co"
+                />
+              </label>
+              <label>
+                {t('Anon Key', 'Anon Key')}
+                <input
+                  type="password"
+                  value={appSettings.integrations.supabase?.anonKey ?? ''}
+                  onChange={(event) =>
+                    setAppSettings((prev) => ({
+                      ...prev,
+                      integrations: {
+                        ...prev.integrations,
+                        supabase: { ...prev.integrations.supabase, anonKey: event.target.value },
+                      },
+                    }))
+                  }
+                  placeholder="eyJhbGci..."
+                />
+              </label>
+            </div>
+            <div className="toolbar-row">
+              <button
+                type="button"
+                onClick={() => void handleSaveSettings(appSettings)}
+                disabled={busy}
+              >
+                {t('Save Supabase Settings', '儲存 Supabase 設定')}
+              </button>
+            </div>
+          </div>
+
+          <div className="panel panel-strong">
+            <h3>
+              {t('Supabase Auth', 'Supabase 帳號')}
+              {supabaseSignedIn && (
+                <span className="muted" style={{ marginLeft: 8, fontWeight: 'normal', fontSize: '0.85em' }}>
+                  ✓ {supabaseEmail}
+                </span>
+              )}
+            </h3>
+            {!supabaseSignedIn ? (
+              <>
+                <div className="form-grid two-col-grid">
+                  <label>
+                    {t('Email', 'Email')}
+                    <input
+                      type="email"
+                      value={supabaseLoginEmail}
+                      onChange={(event) => setSupabaseLoginEmail(event.target.value)}
+                      placeholder="user@example.com"
+                    />
+                  </label>
+                  <label>
+                    {t('Password', '密碼')}
+                    <input
+                      type="password"
+                      value={supabaseLoginPassword}
+                      onChange={(event) => setSupabaseLoginPassword(event.target.value)}
+                      placeholder="••••••••"
+                    />
+                  </label>
+                </div>
+                <div className="toolbar-row">
+                  <button
+                    type="button"
+                    disabled={busy || !supabaseLoginEmail || !supabaseLoginPassword}
+                    onClick={() =>
+                      void (async () => {
+                        try {
+                          const result = await supabaseSignIn(supabaseLoginEmail, supabaseLoginPassword)
+                          setSupabaseSignedIn(result.signed_in)
+                          setSupabaseEmail(result.email)
+                          setSupabaseLoginPassword('')
+                          pushNotice('success', t(`Signed in as ${result.email}`, `已登入：${result.email}`))
+                        } catch (e) {
+                          pushNotice('error', String(e))
+                        }
+                      })()
+                    }
+                  >
+                    {t('Sign In', '登入')}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="toolbar-row two-col">
+                <button
+                  type="button"
+                  disabled={supabaseSyncing}
+                  onClick={() =>
+                    void (async () => {
+                      setSupabaseSyncing(true)
+                      setSupabaseSyncResult(null)
+                      try {
+                        const stats = await supabaseFullSync()
+                        setSupabaseSyncResult(
+                          t(
+                            `Sync done: pushed ${stats.pushed}, pulled ${stats.pulled}, failed ${stats.failed}`,
+                            `同步完成：上傳 ${stats.pushed}，下載 ${stats.pulled}，失敗 ${stats.failed}`,
+                          ),
+                        )
+                        pushNotice('success', t('Supabase sync complete', 'Supabase 同步完成'))
+                      } catch (e) {
+                        pushNotice('error', String(e))
+                      } finally {
+                        setSupabaseSyncing(false)
+                      }
+                    })()
+                  }
+                >
+                  {supabaseSyncing ? t('Syncing…', '同步中…') : t('Sync Now', '立即同步')}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() =>
+                    void (async () => {
+                      await supabaseSignOut()
+                      setSupabaseSignedIn(false)
+                      setSupabaseEmail('')
+                      pushNotice('success', t('Signed out', '已登出'))
+                    })()
+                  }
+                >
+                  {t('Sign Out', '登出')}
+                </button>
+              </div>
+            )}
+            {supabaseSyncResult && (
+              <p className="muted" style={{ marginTop: 8 }}>
+                {supabaseSyncResult}
+              </p>
+            )}
           </div>
         </div>
       </div>

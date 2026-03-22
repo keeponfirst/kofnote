@@ -231,6 +231,11 @@ function createMockState(): MockState {
           args: ['kof-notebooklm-mcp'],
           defaultNotebookId: 'nb-main',
         },
+        supabase: {
+          url: '',
+          anonKey: '',
+          lastSyncAt: '1970-01-01T00:00:00Z',
+        },
       },
       providerRegistry: {
         providers: [
@@ -1195,6 +1200,46 @@ export async function getTimeline(args: {
   limit?: number
 }): Promise<TimelineResponse> {
   return invokeCommand<TimelineResponse>('get_timeline', args)
+}
+
+// ── Supabase ──────────────────────────────────────────────────────────────────
+
+export type SupabaseAuthStatus = {
+  signed_in: boolean
+  email: string
+  user_id: string
+}
+
+export type SupabaseSyncStats = {
+  pushed: number
+  pulled: number
+  failed: number
+}
+
+export async function supabaseSignIn(email: string, password: string): Promise<{ signed_in: boolean; user_id: string; email: string }> {
+  if (MOCK_RUNTIME) {
+    return { signed_in: true, user_id: 'mock-user', email }
+  }
+  return invokeCommand('supabase_sign_in', { email, password })
+}
+
+export async function supabaseSignOut(): Promise<void> {
+  if (MOCK_RUNTIME) return
+  return invokeCommand('supabase_sign_out')
+}
+
+export async function supabaseAuthStatus(): Promise<SupabaseAuthStatus> {
+  if (MOCK_RUNTIME) {
+    return { signed_in: false, email: '', user_id: '' }
+  }
+  return invokeCommand('supabase_auth_status')
+}
+
+export async function supabaseFullSync(): Promise<SupabaseSyncStats> {
+  if (MOCK_RUNTIME) {
+    return { pushed: 0, pulled: 0, failed: 0 }
+  }
+  return invokeCommand('supabase_full_sync')
 }
 
 export async function pickCentralHomeDirectory(defaultPath?: string): Promise<string | null> {
