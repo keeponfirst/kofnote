@@ -181,10 +181,13 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
 
     // Proactively refresh JWT to avoid mid-sync 401s (Supabase tokens expire in 1h)
     let jwt = match kc_get(SUPABASE_JWT_KEY) {
-        Some(existing) => {
-            // Try refresh — fall back to existing token if refresh fails non-fatally
-            try_refresh_token(&client, &url, &anon_key).unwrap_or(existing)
-        }
+        Some(existing) => match try_refresh_token(&client, &url, &anon_key) {
+            Ok(new_token) => new_token,
+            // Fatal: credentials revoked — surface error, do not attempt sync
+            Err(e) if e.contains("失效") || e.contains("重新登入") => return Err(e),
+            // Non-fatal: no refresh token stored or network glitch — use existing JWT
+            Err(_) => existing,
+        },
         None => return Err("未登入 Supabase，請先在設定中登入".to_string()),
     };
     let user_id = kc_get(SUPABASE_USER_ID_KEY).ok_or("找不到用戶 ID")?;
