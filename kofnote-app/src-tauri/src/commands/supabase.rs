@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 const SUPABASE_JWT_KEY: &str = "supabase_jwt";
+const SUPABASE_REFRESH_KEY: &str = "supabase_refresh_token";
 const SUPABASE_USER_ID_KEY: &str = "supabase_user_id";
 const SUPABASE_EMAIL_KEY: &str = "supabase_email";
 
@@ -37,7 +38,7 @@ fn kc_get(username: &str) -> Option<String> {
 
 fn kc_delete(username: &str) {
     if let Ok(entry) = Entry::new(OPENAI_SERVICE, username) {
-        let _ = entry.delete_credential();
+        let _ = entry.delete_password();
     }
 }
 
@@ -46,6 +47,7 @@ fn kc_delete(username: &str) {
 #[derive(Debug, Serialize, Deserialize)]
 struct SupabaseTokenResponse {
     access_token: String,
+    refresh_token: Option<String>,
     user: SupabaseUser,
 }
 
@@ -85,6 +87,9 @@ pub(crate) fn supabase_sign_in(email: String, password: String) -> Result<Value,
     let user_email = body.user.email.clone().unwrap_or_default();
 
     kc_set(SUPABASE_JWT_KEY, &body.access_token)?;
+    if let Some(rt) = &body.refresh_token {
+        let _ = kc_set(SUPABASE_REFRESH_KEY, rt);
+    }
     kc_set(SUPABASE_USER_ID_KEY, &body.user.id)?;
     kc_set(SUPABASE_EMAIL_KEY, &user_email)?;
 
@@ -98,9 +103,51 @@ pub(crate) fn supabase_sign_in(email: String, password: String) -> Result<Value,
 #[tauri::command]
 pub(crate) fn supabase_sign_out() -> Result<(), String> {
     kc_delete(SUPABASE_JWT_KEY);
+    kc_delete(SUPABASE_REFRESH_KEY);
     kc_delete(SUPABASE_USER_ID_KEY);
     kc_delete(SUPABASE_EMAIL_KEY);
     Ok(())
+}
+
+// ── JWT refresh ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RefreshTokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+/// Try to refresh the Supabase JWT using the stored refresh_token.
+/// Updates keychain on success. Returns new access_token or an error
+/// message prompting the user to sign in again.
+fn try_refresh_token(client: &Client, url: &str, anon_key: &str) -> Result<String, String> {
+    let refresh_token = kc_get(SUPABASE_REFRESH_KEY)
+        .ok_or("JWT 已過期，請重新登入（無 refresh token）")?;
+
+    let res = client
+        .post(format!("{}/auth/v1/token?grant_type=refresh_token", url))
+        .header("apikey", anon_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        .send()
+        .map_err(|e| format!("網路錯誤（refresh）: {}", e))?;
+
+    if res.status() == 400 || res.status() == 401 {
+        // Refresh token revoked or expired — clear credentials
+        kc_delete(SUPABASE_JWT_KEY);
+        kc_delete(SUPABASE_REFRESH_KEY);
+        return Err("登入已失效，請重新登入".to_string());
+    }
+    if !res.status().is_success() {
+        return Err(format!("Token refresh 失敗（{}）", res.status()));
+    }
+
+    let body: RefreshTokenResponse = res.json().map_err(|e| e.to_string())?;
+    kc_set(SUPABASE_JWT_KEY, &body.access_token)?;
+    if let Some(rt) = &body.refresh_token {
+        let _ = kc_set(SUPABASE_REFRESH_KEY, rt);
+    }
+    Ok(body.access_token)
 }
 
 #[tauri::command]
@@ -130,7 +177,16 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
     let anon_key = supabase.anon_key.trim().to_string();
     let last_sync = supabase.last_sync_at.clone();
 
-    let jwt = kc_get(SUPABASE_JWT_KEY).ok_or("未登入 Supabase，請先在設定中登入")?;
+    let client = Client::new();
+
+    // Proactively refresh JWT to avoid mid-sync 401s (Supabase tokens expire in 1h)
+    let jwt = match kc_get(SUPABASE_JWT_KEY) {
+        Some(existing) => {
+            // Try refresh — fall back to existing token if refresh fails non-fatally
+            try_refresh_token(&client, &url, &anon_key).unwrap_or(existing)
+        }
+        None => return Err("未登入 Supabase，請先在設定中登入".to_string()),
+    };
     let user_id = kc_get(SUPABASE_USER_ID_KEY).ok_or("找不到用戶 ID")?;
 
     if url.is_empty() {
@@ -141,7 +197,6 @@ pub(crate) fn supabase_full_sync() -> Result<SyncStats, String> {
         .ok_or("找不到 Central Home 目錄")?;
     let central_home = normalized_home(central_home).ok_or("Central Home 路徑無效")?;
 
-    let client = Client::new();
     let mut pushed = 0usize;
     let mut failed = 0usize;
 
