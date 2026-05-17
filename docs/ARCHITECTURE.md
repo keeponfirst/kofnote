@@ -199,7 +199,7 @@ App 啟動 / 網路恢復
 
 ## 六、API Gateway（Cloudflare Workers）
 
-**位置**：`kofnote/gateway/`
+**位置**：`github.com/keeponfirst/kofnote-gateway`
 **部署**：`npm run deploy`（需先設定 KV namespace + secrets）
 
 ### 端點
@@ -250,7 +250,7 @@ Request（含 Supabase JWT）
 ### 部署步驟
 
 ```bash
-cd kofnote/gateway
+cd kofnote-gateway
 npm install
 
 # 建立 KV namespace
@@ -458,21 +458,20 @@ export async function checkIpRateLimit(request, env) {
 
 ## 十四、相關檔案索引
 
-```
-kofnote/
+```text
+kofnote-gateway/
 ├── supabase/
-│   ├── migrations/
-│   │   ├── 001_initial_schema.sql   ← 完整 schema
-│   │   └── 002_seed_data.sql        ← 開發測試
-│   └── README.md                    ← 設定步驟
-├── gateway/
-│   ├── src/
-│   │   ├── index.js                 ← 路由入口
-│   │   ├── utils.js                 ← 共用工具
-│   │   ├── ai/router.js             ← AI model 路由
-│   │   ├── handlers/                ← classify / summarize / analyze
-│   │   └── middleware/              ← auth / rate-limit / cors
-│   └── wrangler.toml                ← 部署設定
+│   ├── migrations/                  ← shared backend schema
+│   └── README.md                    ← Supabase 設定步驟
+├── src/
+│   ├── index.js                     ← 路由入口
+│   ├── ai/                          ← AI model / embeddings
+│   ├── handlers/                    ← classify / chat / embed / ...
+│   └── middleware/                  ← auth / rate-limit / cors
+└── wrangler.toml                    ← Worker 部署設定
+
+kofnote/
 └── docs/
-    └── ARCHITECTURE.md              ← 本文件
+    ├── ARCHITECTURE.md              ← 本文件
+    └── BACKEND_MIGRATION.md         ← backend 搬遷說明
 ```
